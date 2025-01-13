@@ -2,6 +2,7 @@
 name = "erudite"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.80"
 
 [dependencies]
 anyhow = "1.0.94"
