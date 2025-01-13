@@ -1,0 +1,11 @@
+[package]
+name = "erudite"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.94"
+leucite = { version = "0.1.0", features = ["tokio"] }
+tmpdir = "1.0.0"
+tokio = { version = "1.42.0", features = ["fs", "macros", "time", "io-util"] }
+tracing = "0.1.41"
