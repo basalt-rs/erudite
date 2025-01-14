@@ -15,7 +15,7 @@ async fn malicious_fail() -> anyhow::Result<()> {
         .test("hello", "olleh")
         .create_file("malicious.js", include_str!("./malicious.js"))
         .run_rules(rules)
-        .timeout(Duration::from_millis(1000));
+        .timeout(Duration::from_secs(2));
     dbg!(&runner);
 
     let results = runner.run().await?;
