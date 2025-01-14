@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use erudite::{RunOutput, Runner, SimpleOutput, TestFailReason, TestOutput};
+use erudite::{CommandConfig, RunOutput, Runner, SimpleOutput, TestFailReason, TestOutput};
+use leucite::MemorySize;
 
 #[tokio::test]
 async fn java_success() -> anyhow::Result<()> {
@@ -11,6 +12,7 @@ async fn java_success() -> anyhow::Result<()> {
         .test("hello", "olleh")
         .test("hello world", "dlrow olleh")
         .test("foo bar 2", "2 rab oof")
+        .max_memory(CommandConfig::both(MemorySize::from_mb(800)))
         .create_file("Solution.java", include_str!("./Solution.java"))
         .timeout(Duration::from_millis(1000));
     dbg!(&runner);

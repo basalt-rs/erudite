@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{bail, ensure, Context};
-use leucite::{tokio::CommandExt, Rules};
+use leucite::{CommandExt, MemorySize, Rules};
 use tmpdir::TmpDir;
 use tokio::{fs, io::AsyncWriteExt, process::Command, task::JoinSet};
 
@@ -162,6 +162,47 @@ impl Default for CopyConfig {
     }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct CommandConfig<T> {
+    compile: Option<T>,
+    run: Option<T>,
+}
+
+impl<T> Default for CommandConfig<T> {
+    fn default() -> Self {
+        Self {
+            compile: Default::default(),
+            run: Default::default(),
+        }
+    }
+}
+
+impl<T> CommandConfig<T> {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn both(value: T) -> Self
+    where
+        T: Copy,
+    {
+        Self {
+            compile: Some(value),
+            run: Some(value),
+        }
+    }
+
+    pub fn compile(mut self, value: T) -> Self {
+        self.compile = Some(value);
+        self
+    }
+
+    pub fn run(mut self, value: T) -> Self {
+        self.run = Some(value);
+        self
+    }
+}
+
 /// Runner builder for a suite of tests
 ///
 /// ```no_run
@@ -195,6 +236,8 @@ pub struct Runner {
     test_cases: Vec<TestCase>,
     compile_rules: Option<Rules>,
     run_rules: Option<Rules>,
+    max_memory: CommandConfig<MemorySize>,
+    max_file_size: CommandConfig<MemorySize>,
 }
 
 impl Runner {
@@ -369,6 +412,18 @@ impl Runner {
         self
     }
 
+    /// Limit the maximum amount of memory that the commands can use
+    pub fn max_memory(&mut self, max_memory: CommandConfig<MemorySize>) -> &mut Self {
+        self.max_memory = max_memory;
+        self
+    }
+
+    /// Limit the maximum file size that the command can produce
+    pub fn max_file_size(&mut self, max_file_size: CommandConfig<MemorySize>) -> &mut Self {
+        self.max_file_size = max_file_size;
+        self
+    }
+
     /// Validate that this runner is in a valid state to be run
     fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.run_command.len() != 0, "No run command provided");
@@ -430,20 +485,10 @@ impl Runner {
         mut run_command: Command,
         copy_config: CopyConfig,
         case: TestCase,
-        spawn_rules: Option<Rules>,
     ) -> anyhow::Result<TestOutput> {
-        run_command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        let mut child = if let Some(spawn_rules) = spawn_rules {
-            run_command.spawn_restricted(spawn_rules)
-        } else {
-            run_command.spawn()
-        }
-        .with_context(|| format!("running command {:?}", run_command))?;
+        let mut child = run_command
+            .spawn()
+            .with_context(|| format!("running command {:?}", run_command))?;
 
         let mut stdin = child.stdin.take().unwrap();
         stdin
@@ -486,19 +531,19 @@ impl Runner {
 
         let compile_rules = self.get_compile_rules(cwd);
 
-        let mut cmd = command_from_slice(compile_command).expect("Checked by caller");
-        cmd.current_dir(cwd)
+        let output = command_from_slice(compile_command)
+            .expect("Checked by caller")
+            .current_dir(cwd)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = if let Some(compile_rules) = compile_rules {
-            cmd.spawn_restricted(compile_rules)
-        } else {
-            cmd.spawn()
-        }
-        .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?
-        .wait_with_output()
-        .await
-        .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?;
+            .stderr(Stdio::piped())
+            .restrict_if(compile_rules.map(Arc::new))
+            .max_memory_if(self.max_memory.compile)
+            .max_file_size_if(self.max_file_size.compile)
+            .spawn()
+            .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?
+            .wait_with_output()
+            .await
+            .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?;
 
         if !output.status.success() {
             return Err(RunOutput::CompileFail(output.into()));
@@ -513,17 +558,25 @@ impl Runner {
         let mut out: Vec<Option<TestOutput>> = vec![None; self.test_cases.len()];
 
         let mut joinset = JoinSet::new();
+        let arc = self.get_run_rules(cwd).map(Arc::new);
         for (i, case) in self.test_cases.clone().into_iter().enumerate() {
             let Some(mut run_command) = command_from_slice(&self.run_command) else {
                 bail!("Invalid command {:?}", self.run_command);
             };
-            run_command.current_dir(cwd);
+            run_command
+                .current_dir(cwd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .restrict_if(arc.as_ref().map(Arc::clone))
+                .max_memory_if(self.max_memory.run)
+                .max_file_size_if(self.max_file_size.run);
             // copy the configs before we pass them into the `spawn` call.
             let copy = self.copy_config;
             // Replace with Arc once <https://github.com/basalt-rs/leucite/issues/3> is fixed.
-            let rules = self.get_run_rules(cwd);
             joinset.spawn(async move {
-                Self::run_test(run_command, copy, case, rules)
+                Self::run_test(run_command, copy, case)
                     .await
                     .map(|v| (i, v))
             });
