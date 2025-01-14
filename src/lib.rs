@@ -1,10 +1,12 @@
 use std::{
     path::{Path, PathBuf},
     process::{Output, Stdio},
+    sync::Arc,
     time::Duration,
 };
 
 use anyhow::{bail, ensure, Context};
+use leucite::{tokio::CommandExt, Rules};
 use tmpdir::TmpDir;
 use tokio::{fs, io::AsyncWriteExt, process::Command, task::JoinSet};
 
@@ -43,6 +45,29 @@ impl TestCase {
 pub enum Bytes {
     String(String),
     Bytes(Vec<u8>),
+}
+
+impl Bytes {
+    pub fn len(&self) -> usize {
+        match self {
+            Bytes::String(s) => s.len(),
+            Bytes::Bytes(v) => v.len(),
+        }
+    }
+
+    pub fn str(&self) -> Option<&str> {
+        match self {
+            Bytes::String(s) => Some(s),
+            Bytes::Bytes(_) => None,
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Bytes::String(s) => s.as_bytes(),
+            Bytes::Bytes(v) => &v,
+        }
+    }
 }
 
 impl From<String> for Bytes {
@@ -142,12 +167,19 @@ impl Default for CopyConfig {
 /// ```no_run
 /// # // no_run because `.run()` executes commands
 /// # use erudite::Runner;
+/// # use leucite::Rules;
 /// # async fn foo() -> anyhow::Result<()> {
+/// let run_rules = Rules::new()
+///     .add_read_only("/usr")
+///     .add_read_only("/etc")
+///     .add_read_only("/bin");
+///
 /// let output = Runner::new()
 ///     .compile_command(["ghc", "solution.hs"])
 ///     .run_command(["./solution"])
 ///     .test("hello", "olleh")
 ///     .copy_file("solution.hs", "solutions/solution.hs")
+///     .run_rules(run_rules)
 ///     .run()
 ///     .await?;
 /// # Ok(())
@@ -161,6 +193,8 @@ pub struct Runner {
     compile_command: Option<Vec<String>>,
     run_command: Vec<String>,
     test_cases: Vec<TestCase>,
+    compile_rules: Option<Rules>,
+    run_rules: Option<Rules>,
 }
 
 impl Runner {
@@ -311,6 +345,30 @@ impl Runner {
         self
     }
 
+    /// Set the [`Rules`] for the run command.
+    ///
+    /// If this is not specified, but `compile_rules` is set, then it will use those rules.  
+    /// If neither is specified _no rules will be placed on the run command_.
+    ///
+    /// Note: the rules provided will automatically have the `run_directory` added with read/write
+    /// permissions.
+    pub fn run_rules(&mut self, rules: Rules) -> &mut Self {
+        self.run_rules = Some(rules);
+        self
+    }
+
+    /// Set the [`Rules`] for the run command.
+    ///
+    /// If this is specified, but `run_rules` is not set, then `run_rules` will use these rules.  
+    /// If this is not specified, then the compile command will be run with no rules set.
+    ///
+    /// Note: the rules provided will automatically have the `run_directory` added with read/write
+    /// permissions.
+    pub fn compile_rules(&mut self, rules: Rules) -> &mut Self {
+        self.compile_rules = Some(rules);
+        self
+    }
+
     /// Validate that this runner is in a valid state to be run
     fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.run_command.len() != 0, "No run command provided");
@@ -372,16 +430,21 @@ impl Runner {
         mut run_command: Command,
         copy_config: CopyConfig,
         case: TestCase,
+        spawn_rules: Option<Rules>,
     ) -> anyhow::Result<TestOutput> {
         run_command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = run_command
-            // TODO: Use `leucite` to restrict this command
-            .spawn()
-            .with_context(|| format!("running command {:?}", run_command))?;
+
+        let mut child = if let Some(spawn_rules) = spawn_rules {
+            run_command.spawn_restricted(spawn_rules)
+        } else {
+            run_command.spawn()
+        }
+        .with_context(|| format!("running command {:?}", run_command))?;
+
         let mut stdin = child.stdin.take().unwrap();
         stdin
             .write_all(case.input.as_bytes())
@@ -421,17 +484,21 @@ impl Runner {
             return Ok(());
         };
 
-        let output = command_from_slice(compile_command)
-            .expect("Checked by caller")
-            .current_dir(cwd)
+        let compile_rules = self.get_compile_rules(cwd);
+
+        let mut cmd = command_from_slice(compile_command).expect("Checked by caller");
+        cmd.current_dir(cwd)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // TODO: Use `leucite` to restrict this command
-            .spawn()
-            .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?
-            .wait_with_output()
-            .await
-            .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?;
+            .stderr(Stdio::piped());
+        let output = if let Some(compile_rules) = compile_rules {
+            cmd.spawn_restricted(compile_rules)
+        } else {
+            cmd.spawn()
+        }
+        .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?
+        .wait_with_output()
+        .await
+        .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?;
 
         if !output.status.success() {
             return Err(RunOutput::CompileFail(output.into()));
@@ -453,8 +520,10 @@ impl Runner {
             run_command.current_dir(cwd);
             // copy the configs before we pass them into the `spawn` call.
             let copy = self.copy_config;
+            // Replace with Arc once <https://github.com/basalt-rs/leucite/issues/3> is fixed.
+            let rules = self.get_run_rules(cwd);
             joinset.spawn(async move {
-                Self::run_test(run_command, copy, case)
+                Self::run_test(run_command, copy, case, rules)
                     .await
                     .map(|v| (i, v))
             });
@@ -475,6 +544,18 @@ impl Runner {
         );
 
         Ok(RunOutput::RunSuccess(out))
+    }
+
+    fn get_run_rules(&self, cwd: &Path) -> Option<Rules> {
+        match (&self.run_rules, &self.compile_rules) {
+            (None, None) => None,
+            (None, Some(c)) => Some(c.clone().add_read_write(cwd)),
+            (Some(r), _) => Some(r.clone().add_read_write(cwd)),
+        }
+    }
+
+    fn get_compile_rules(&self, cwd: &Path) -> Option<Rules> {
+        return self.compile_rules.clone().map(|c| c.add_read_write(cwd));
     }
 
     /// Build and run all tests associated with this runner
