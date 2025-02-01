@@ -12,6 +12,7 @@ use tokio::{fs, io::AsyncWriteExt, process::Command, task::JoinSet};
 
 /// Represents the output of a [`Runner`]'s execution.
 #[derive(Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RunOutput {
     /// The runner failed to spawn the command to compile the program
     CompileSpawnFail(String),
@@ -23,6 +24,7 @@ pub enum RunOutput {
 
 /// A test case which has an input and expected output
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TestCase {
     input: String,
     output: String,
@@ -42,6 +44,8 @@ impl TestCase {
 /// for constructing this type is to use [`From::from`] which will automatically choose the
 /// appropriate variant for the data.
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(untagged))]
 pub enum Bytes {
     String(String),
     Bytes(Vec<u8>),
@@ -87,6 +91,7 @@ impl From<Vec<u8>> for Bytes {
 
 /// Data which can be returned from a command
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SimpleOutput {
     pub stdout: Bytes,
     pub stderr: Bytes,
@@ -105,6 +110,7 @@ impl From<Output> for SimpleOutput {
 
 /// The reason that a test may fail
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TestFailReason {
     /// The test took longer than the timeout allowed
     Timeout,
@@ -116,6 +122,7 @@ pub enum TestFailReason {
 
 /// A Result-like enum that represents a passed or failed test
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TestOutput {
     Pass,
     Fail(TestFailReason),
