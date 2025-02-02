@@ -581,7 +581,6 @@ impl Runner {
                 .max_file_size_if(self.max_file_size.run);
             // copy the configs before we pass them into the `spawn` call.
             let copy = self.copy_config;
-            // Replace with Arc once <https://github.com/basalt-rs/leucite/issues/3> is fixed.
             joinset.spawn(async move {
                 Self::run_test(run_command, copy, case)
                     .await
