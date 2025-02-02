@@ -671,8 +671,7 @@
 <a href="#670" id="670">670</a>
 <a href="#671" id="671">671</a>
 <a href="#672" id="672">672</a>
-<a href="#673" id="673">673</a>
-<a href="#674" id="674">674</a></pre></div><pre class="rust"><code><span class="kw">use </span>std::{
+<a href="#673" id="673">673</a></pre></div><pre class="rust"><code><span class="kw">use </span>std::{
     path::{Path, PathBuf},
     process::{Output, Stdio},
     sync::Arc,
@@ -1255,8 +1254,7 @@
                 .max_file_size_if(<span class="self">self</span>.max_file_size.run);
             <span class="comment">// copy the configs before we pass them into the `spawn` call.
             </span><span class="kw">let </span>copy = <span class="self">self</span>.copy_config;
-            <span class="comment">// Replace with Arc once &lt;https://github.com/basalt-rs/leucite/issues/3&gt; is fixed.
-            </span>joinset.spawn(<span class="kw">async move </span>{
+            joinset.spawn(<span class="kw">async move </span>{
                 <span class="self">Self</span>::run_test(run_command, copy, case)
                     .<span class="kw">await
                     </span>.map(|v| (i, v))
