@@ -1,34 +1,35 @@
 name: Docs
 
 permissions:
-  contents: write
+    contents: write
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+    push:
+        branches: [main]
+    pull_request:
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
 
 jobs:
-  doc:
-    name: Publish
-    runs-on: ubuntu-latest
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: true
-    env:
-      RUSTDOCFLAGS: -Dwarnings
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: dtolnay/install@cargo-docs-rs
-      - run: cargo docs-rs --target-dir target
-    - name: Add index
-      run: |
-        echo '<meta http-equiv="refresh" content="0; url=landlock">' > target/doc/index.html
+    doc:
+        name: Publish
+        runs-on: ubuntu-latest
+        env:
+            RUSTDOCFLAGS: -Dwarnings
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@nightly
+            - uses: dtolnay/install@cargo-docs-rs
+            - run: cargo docs-rs --target-dir target
+        - name: Add index
+          run: |
+              echo '<meta http-equiv="refresh" content="0; url=landlock">' > target/doc/index.html
 
-    - name: Deploy to GitHub Pages
-      if: ${{ github.event_name != 'pull_request' }}
-      uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.DEPLOY_GITHUB_TOKEN }}
-        publish_dir: target/x86_64-unknown-linux-gnu/doc
+        - name: Deploy to GitHub Pages
+          if: ${{ github.event_name != 'pull_request' }}
+          uses: peaceiris/actions-gh-pages@v3
+          with:
+              github_token: ${{ secrets.DEPLOY_GITHUB_TOKEN }}
+              publish_dir: target/x86_64-unknown-linux-gnu/doc
