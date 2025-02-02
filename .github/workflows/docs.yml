@@ -14,7 +14,6 @@ concurrency:
 
 jobs:
     publish:
-        name: Publish
         runs-on: ubuntu-latest
         env:
             RUSTDOCFLAGS: -Dwarnings
@@ -23,9 +22,9 @@ jobs:
             - uses: dtolnay/rust-toolchain@nightly
             - uses: dtolnay/install@cargo-docs-rs
             - run: cargo docs-rs --target-dir target
-        - name: Add index
-          run: |
-              echo '<meta http-equiv="refresh" content="0; url=landlock">' > target/doc/index.html
+            - name: Add index
+              run: |
+                  echo '<meta http-equiv="refresh" content="0; url=landlock">' > target/doc/index.html
 
         - name: Deploy to GitHub Pages
           if: ${{ github.event_name != 'pull_request' }}
