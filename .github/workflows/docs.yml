@@ -27,7 +27,7 @@ jobs:
                   echo '<meta http-equiv="refresh" content="0; url=erudite">' > target/x86_64-unknown-linux-gnu/doc/index.html
             - name: Deploy to GitHub Pages
               if: ${{ github.event_name != 'pull_request' }}
-              uses: peaceiris/actions-gh-pages@v3
+              uses: peaceiris/actions-gh-pages@v4
               with:
                   github_token: ${{ secrets.DEPLOY_GITHUB_TOKEN }}
                   publish_dir: target/x86_64-unknown-linux-gnu/doc
