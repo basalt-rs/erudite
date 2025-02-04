@@ -12,6 +12,7 @@ async fn java_success() -> anyhow::Result<()> {
         .test("hello", "olleh")
         .test("hello world", "dlrow olleh")
         .test("foo bar 2", "2 rab oof")
+        .test("", "")
         .max_memory(CommandConfig::both(MemorySize::from_mb(800)))
         .create_file("Solution.java", include_str!("./Solution.java"))
         .timeout(Duration::from_millis(1000));
@@ -30,7 +31,8 @@ async fn java_success() -> anyhow::Result<()> {
                 stderr: String::new().into(),
                 status: 0
             })),
-            TestOutput::Fail(TestFailReason::Timeout)
+            TestOutput::Fail(TestFailReason::Timeout),
+            TestOutput::Pass,
         ])
     );
 
@@ -46,6 +48,7 @@ async fn java_compile_fail() -> anyhow::Result<()> {
         .test("hello", "olleh")
         .test("hello world", "dlrow olleh")
         .test("foo bar 2", "2 rab oof")
+        .test("", "")
         .create_file("Solution.java", include_str!("./Solution.java"))
         .timeout(Duration::from_millis(1000));
     dbg!(&runner);

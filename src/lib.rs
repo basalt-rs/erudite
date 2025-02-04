@@ -502,6 +502,10 @@ impl Runner {
             .write_all(case.input.as_bytes())
             .await
             .context("Writing stdin to test case")?;
+        stdin
+            .write_u8(b'\n')
+            .await
+            .context("Writing stdin to test case")?;
         drop(stdin);
         let out = match tokio::time::timeout(copy_config.timeout, child.wait_with_output()).await {
             Ok(out) => out?,
