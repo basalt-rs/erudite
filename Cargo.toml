@@ -9,7 +9,7 @@ serde = ["dep:serde"]
 
 [dependencies]
 anyhow = "1.0.94"
-leucite = { version = "0.2.0", features = ["tokio"] }
+leucite = { version = "1.0.0", features = ["tokio"] }
 tmpdir = "1.0.0"
 tokio = { version = "1.42.0", features = ["fs", "macros", "time", "io-util"] }
 tracing = "0.1.41"
