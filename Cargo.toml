@@ -14,3 +14,6 @@ tmpdir = "1.0.0"
 tokio = { version = "1.42.0", features = ["fs", "macros", "time", "io-util"] }
 tracing = "0.1.41"
 serde = { version = "1.0.217", features = ["derive"], optional = true }
+derive_more = { version = "2.0.1", features = ["full"] }
+ident_concat = "0.3.0"
+concat-idents = "1.1.5"
