@@ -19,11 +19,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .test("world", "dlrow")
         .file(FileContent::path("examples/runner.rs"), "./runner.rs")
         .compile_command(["rustc", "-o", "main", "main.rs"])
-        .compile_timeout(Duration::from_secs(10))
         .run_command(["./main"])
-        .run_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(10))
         .rules(rules)
         .build();
+
+    dbg!(context);
 
     Ok(())
 }
