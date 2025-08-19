@@ -1,10 +1,15 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use derive_more::From;
 use leucite::{MemorySize, Rules};
 
 pub mod builder;
-use builder::{TestContextBuilder, UnsetRunCmd, UnsetTests};
+use builder::{MissingRunCmd, MissingTests, TestContextBuilder};
+
+use crate::runner::TestRunner;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, From)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -21,17 +26,19 @@ impl From<&str> for ExpectedOutput {
 /// A test case which has an input and expected output
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TestCase {
-    input: String,
-    output: ExpectedOutput,
+pub struct TestCase<T> {
+    pub input: String,
+    pub output: ExpectedOutput,
+    pub data: T,
 }
 
-impl TestCase {
+impl<T> TestCase<T> {
     /// Create a new test case from input and output
-    pub fn new(input: impl Into<String>, output: impl Into<ExpectedOutput>) -> Self {
+    pub fn new(input: impl Into<String>, output: impl Into<ExpectedOutput>, data: T) -> Self {
         Self {
             input: input.into(),
             output: output.into(),
+            data,
         }
     }
 }
@@ -40,8 +47,24 @@ impl TestCase {
 #[derive(Clone, Debug)]
 pub struct FileConfig {
     /// This path is relative to the temporary directory created while running tests
-    dst: PathBuf,
+    dest: PathBuf,
     src: FileContent,
+}
+
+impl FileConfig {
+    pub async fn write_file(&self, base: &Path) -> std::io::Result<u64> {
+        let target = base.join(&self.dest);
+        match self.src {
+            FileContent::Path(ref path) => tokio::fs::copy(path, target).await,
+            FileContent::Bytes(ref contents) => tokio::fs::write(target, contents)
+                .await
+                .map(|_| contents.len() as _),
+        }
+    }
+
+    pub fn dest(&self) -> &Path {
+        &self.dest
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -60,8 +83,13 @@ impl FileContent {
         Self::Path(path.into())
     }
 
-    pub fn bytes(path: impl Into<Box<[u8]>>) -> Self {
-        Self::Bytes(path.into())
+    pub fn string(string: impl Into<String>) -> Self {
+        let string: String = string.into();
+        Self::bytes(string.into_boxed_str())
+    }
+
+    pub fn bytes(bytes: impl Into<Box<[u8]>>) -> Self {
+        Self::Bytes(bytes.into())
     }
 }
 
@@ -134,10 +162,10 @@ impl<T> CommandConfig<T> {
     pub fn compile(&self) -> Option<&T> {
         match self {
             CommandConfig::None => None,
-            CommandConfig::Compile(c) => Some(&c),
+            CommandConfig::Compile(c) => Some(c),
             CommandConfig::Run(_) => None,
-            CommandConfig::Equal(c) => Some(&c),
-            CommandConfig::Different { compile, run: _ } => Some(&compile),
+            CommandConfig::Equal(c) => Some(c),
+            CommandConfig::Different { compile, run: _ } => Some(compile),
         }
     }
 
@@ -145,27 +173,32 @@ impl<T> CommandConfig<T> {
         match self {
             CommandConfig::None => None,
             CommandConfig::Compile(_) => None,
-            CommandConfig::Run(r) => Some(&r),
-            CommandConfig::Equal(r) => Some(&r),
-            CommandConfig::Different { compile: _, run } => Some(&run),
+            CommandConfig::Run(r) => Some(r),
+            CommandConfig::Equal(r) => Some(r),
+            CommandConfig::Different { compile: _, run } => Some(run),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct TestContext {
-    trim_output: bool,
-    files: Vec<FileConfig>,
-    command: CommandConfig<Box<[String]>>,
-    timeout: CommandConfig<Duration>,
-    rules: CommandConfig<Rules>,
-    max_memory: CommandConfig<MemorySize>,
-    max_file_size: CommandConfig<MemorySize>,
-    max_threads: CommandConfig<u64>,
+pub struct TestContext<T> {
+    pub(crate) trim_output: bool,
+    pub(crate) files: Vec<FileConfig>,
+    pub(crate) test_cases: Vec<TestCase<T>>,
+    pub(crate) command: CommandConfig<Box<[String]>>,
+    pub(crate) timeout: CommandConfig<Duration>,
+    pub(crate) rules: CommandConfig<Rules>,
+    pub(crate) max_memory: CommandConfig<MemorySize>,
+    pub(crate) max_file_size: CommandConfig<MemorySize>,
+    pub(crate) max_threads: CommandConfig<u64>,
 }
 
-impl TestContext {
-    pub fn builder() -> TestContextBuilder<UnsetTests, UnsetRunCmd> {
+impl<T> TestContext<T> {
+    pub fn builder() -> TestContextBuilder<MissingTests, MissingRunCmd, T> {
         TestContextBuilder::new()
+    }
+
+    pub fn test_builder(&self) -> TestRunner<'_, T> {
+        TestRunner::new(self)
     }
 }
