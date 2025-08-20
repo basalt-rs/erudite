@@ -1,5 +1,6 @@
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -20,6 +21,30 @@ pub enum ExpectedOutput {
 impl From<&str> for ExpectedOutput {
     fn from(value: &str) -> Self {
         ExpectedOutput::String(value.into())
+    }
+}
+
+// TODO: output validator trait?
+#[derive(Debug, Clone, Hash, Eq, PartialEq, From)]
+pub struct OutputValidator {
+    pub(crate) trim_output: bool,
+    pub(crate) match_case: bool,
+    pub(crate) expected_output: ExpectedOutput,
+}
+
+impl OutputValidator {
+    pub(crate) fn is_valid(&self, output: impl AsRef<str>) -> bool {
+        let output = output.as_ref();
+        let output = if self.trim_output {
+            output.trim()
+        } else {
+            output
+        };
+
+        match self.expected_output {
+            ExpectedOutput::String(ref s) if self.match_case => s.eq_ignore_ascii_case(output),
+            ExpectedOutput::String(ref s) => s == output,
+        }
     }
 }
 
@@ -198,7 +223,7 @@ impl<T> TestContext<T> {
         TestContextBuilder::new()
     }
 
-    pub fn test_builder(&self) -> TestRunner<'_, T> {
+    pub fn test_builder(self: Arc<Self>) -> TestRunner<'static, T> {
         TestRunner::new(self)
     }
 }

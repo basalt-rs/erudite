@@ -2,22 +2,24 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
+    time::Duration,
 };
 
 use leucite::{CommandExt, Rules};
 use thiserror::Error;
 use tmpdir::TmpDir;
 use tokio::{
-    io::AsyncRead,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     process::Command,
     task::{JoinError, JoinSet},
     time::Instant,
+    try_join,
 };
-use tracing::{debug, debug_span, instrument, trace, Instrument};
+use tracing::{debug, debug_span, error, instrument, trace, Instrument};
 
 use crate::{
-    context::{TestCase, TestContext},
-    SimpleOutput,
+    context::{CommandConfig, OutputValidator, TestCase, TestContext},
+    Bytes, SimpleOutput,
 };
 
 pub struct TestFileConfig<'a> {
@@ -105,13 +107,17 @@ pub struct CreateFilesError {
 }
 
 #[derive(Debug, Error)]
-pub enum SpawnTestsError {
-    #[error("Failed to create file at {}: {:?}", .path.display(), .error)]
-    CreateFileError {
-        path: PathBuf,
-        #[source]
-        error: std::io::Error,
-    },
+pub enum SpawnTestError {
+    #[error("Failed to join thread: {:?}", .0)]
+    JoinError(JoinError),
+    #[error("Invalid run command specified")]
+    InvalidCommand,
+    #[error("Failed to spawn run command: {:?}", .0)]
+    SpawnFail(#[source] std::io::Error),
+    #[error("Failed to write to stdin of test program: {:?}", .0)]
+    WriteStdinFail(#[source] std::io::Error),
+    #[error("Failed to wait on run command: {:?}", .0)]
+    WaitFail(#[source] std::io::Error),
 }
 
 #[derive(Debug, Error)]
@@ -121,12 +127,12 @@ pub enum CompileAndSpawnError {
     #[error("failed to create necessary files: {:?}", .0)]
     CreateFilesError(#[from] CreateFilesError),
     #[error("failed to spawn tests: {:?}", .0)]
-    SpawnTestsError(#[from] SpawnTestsError),
+    SpawnTestError(#[from] SpawnTestError),
 }
 
 #[must_use]
 pub struct TestRunner<'a, T> {
-    context: &'a TestContext<T>,
+    context: Arc<TestContext<T>>,
     files: Vec<TestFileConfig<'a>>,
     test_filter: Option<fn(&TestCase<T>) -> bool>,
     cwd: Option<&'a Path>,
@@ -135,7 +141,7 @@ pub struct TestRunner<'a, T> {
 
 /// Builder functions
 impl<'a, T> TestRunner<'a, T> {
-    pub fn new(context: &'a TestContext<T>) -> Self {
+    pub fn new(context: Arc<TestContext<T>>) -> Self {
         Self {
             context,
             files: Default::default(),
@@ -173,7 +179,7 @@ impl<'a, T> TestRunner<'a, T> {
 // implementation functions
 impl<'a, T> TestRunner<'a, T>
 where
-    T: Send + Clone + 'static,
+    T: Send + Sync + Clone + 'static,
 {
     async fn create_files(&mut self, cwd: &Path) -> Result<(), CreateFilesError> {
         for file in &self.context.files {
@@ -244,7 +250,136 @@ where
         Ok(Some(output.into()))
     }
 
-    fn spawn_tests(&mut self) -> JoinSet<TestResult<T>> {
+    async fn run_test(
+        index: usize,
+        cwd: &Path,
+        case: TestCase<T>,
+        run_rules: Option<Arc<Rules>>,
+        context: Arc<TestContext<T>>,
+    ) -> Result<TestResult<T>, SpawnTestError> {
+        let run_command = context.command.run().expect("checked in builder");
+        let start = Instant::now();
+        let mut child = command_from_argv(run_command)
+            .ok_or(SpawnTestError::InvalidCommand)?
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .restrict_if(run_rules)
+            .max_memory_if(context.max_memory.run().copied())
+            .max_file_size_if(context.max_memory.run().copied())
+            .max_threads_if(context.max_threads.run().copied())
+            .spawn()
+            .map_err(SpawnTestError::SpawnFail)?;
+
+        let stdin_pipe = child.stdin.take().expect("We only take this once");
+        let stdout_pipe = child.stdout.take().expect("We only take this once");
+        let stderr_pipe = child.stderr.take().expect("We only take this once");
+
+        async fn read_to_end<R>(mut r: R) -> Result<Vec<u8>, SpawnTestError>
+        where
+            R: AsyncRead + Unpin,
+        {
+            let mut out = Vec::new();
+            let bytes = r
+                .read_to_end(&mut out)
+                .await
+                .map_err(SpawnTestError::WaitFail)?;
+            trace!(bytes, "finished reading from stdout");
+            Ok(out)
+        }
+
+        async fn write_input<W>(mut w: W, input: impl AsRef<[u8]>) -> Result<(), SpawnTestError>
+        where
+            W: AsyncWrite + Unpin,
+        {
+            let input = input.as_ref();
+            let mut bytes = 0;
+            w.write_all(input)
+                .await
+                .map_err(SpawnTestError::WriteStdinFail)?;
+            bytes += input.len();
+            w.write_u8(b'\n') // Required for empty input to work in some languages
+                .await
+                .map_err(SpawnTestError::WriteStdinFail)?;
+            bytes += 1;
+            trace!(bytes, "finished writing to stdin");
+            Ok(())
+        }
+
+        let stdin_fut = write_input(stdin_pipe, &case.input);
+        let stdout_fut = read_to_end(stdout_pipe);
+        let stderr_fut = read_to_end(stderr_pipe);
+        let timeout = context.timeout.run().copied();
+        let wait_fut = async move {
+            trace!("waiting on test child");
+            let (timed_out, exit_status) = if let Some(timeout) = timeout {
+                match tokio::time::timeout(timeout, child.wait()).await {
+                    Ok(Ok(exit_status)) => {
+                        trace!("test ran and successfully waited");
+                        (false, exit_status.code().unwrap_or(1))
+                    }
+                    Ok(Err(e)) => {
+                        trace!("test ran, but failed while waiting");
+                        return Err(SpawnTestError::WaitFail(e));
+                    }
+                    Err(elapsed) => {
+                        trace!(?elapsed, "test timed out");
+                        (true, 0)
+                    }
+                }
+            } else {
+                let exit_status = child
+                    .wait()
+                    .await
+                    .map_err(SpawnTestError::WaitFail)
+                    .map(|x| x.code().unwrap_or(1))?;
+                (false, exit_status)
+            };
+            Ok((timed_out, exit_status, start.elapsed()))
+        };
+
+        let ((), stdout, stderr, (timed_out, exit_status, time_taken)) =
+            try_join!(stdin_fut, stdout_fut, stderr_fut, wait_fut)?;
+
+        trace!(?time_taken, ?timed_out, ?exit_status, "test finished");
+
+        let output = SimpleOutput::new(stdout, stderr, exit_status);
+
+        let validator = OutputValidator {
+            trim_output: context.trim_output,
+            match_case: true, // todo
+            expected_output: case.output,
+        };
+
+        let state = if timed_out {
+            TestResultState::TimedOut
+        } else if output.status != 0 {
+            TestResultState::RuntimeFail
+        } else if let Some(stdout) = output.stdout.str() {
+            if validator.is_valid(stdout) {
+                TestResultState::Pass
+            } else {
+                TestResultState::IncorrectOutput
+            }
+        } else {
+            TestResultState::IncorrectOutput
+        };
+        Ok(TestResult {
+            index,
+            data: Some(case.data),
+            output,
+            state,
+            time_taken,
+        })
+    }
+
+    fn spawn_tests(
+        &mut self,
+        cwd: &Path,
+        run_rules: Option<Arc<Rules>>,
+    ) -> JoinSet<Result<TestResult<T>, SpawnTestError>> {
         let mut joinset = JoinSet::new();
 
         for (i, case) in self.context.test_cases.iter().enumerate() {
@@ -254,35 +389,42 @@ where
             }
 
             let case = case.clone();
-            let span = debug_span!(
-                "run_test",
-                index = i,
-                input = ?case.input,
-                output = ?case.output
-            );
+            const MAX_LEN: usize = 10;
+            let input = if case.input.len() > MAX_LEN {
+                &format!("{}…", &case.input[..MAX_LEN])
+            } else {
+                &case.input
+            };
+            let span = debug_span!("run_test", index = i, ?input);
+            let context = Arc::clone(&self.context);
+            let run_rules = run_rules.as_ref().map(Arc::clone);
+            let path = cwd.to_path_buf();
             joinset.spawn(
-                async move {
-                    let millis = tokio::io::AsyncReadExt::read_u8(
-                        &mut tokio::fs::File::open("/dev/random").await.unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                    let millis = (millis as u64) * 10;
-                    trace!(millis, "sleeping");
-                    tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
-                    // TODO: spawn the command here
-                    TestResult {
-                        index: i,
-                        data: Some(case.data),
-                        passed: true,
-                        output: SimpleOutput::default(),
-                    }
-                }
-                .instrument(span),
+                async move { Self::run_test(i, &path, case, run_rules, context).await }
+                    .instrument(span),
             );
         }
 
         joinset
+    }
+
+    fn create_rules(&self, cwd: &Path) -> (Option<Arc<Rules>>, Option<Arc<Rules>>) {
+        let modify_rules = |rules: Rules| -> Rules { rules.clone().add_read_write(cwd) };
+        match &self.context.rules {
+            CommandConfig::None => (None, None),
+            CommandConfig::Compile(ref r) => (Some(Arc::new(modify_rules(r.clone()))), None),
+            CommandConfig::Run(ref r) => (None, Some(Arc::new(modify_rules(r.clone())))),
+            CommandConfig::Equal(ref r) => {
+                // Done this way to only create once instance of the rules and just Arc::clone it
+                let r = modify_rules(r.clone());
+                let r = Arc::new(r);
+                (Some(Arc::clone(&r)), Some(r))
+            }
+            CommandConfig::Different { compile, run } => (
+                Some(Arc::new(modify_rules(compile.clone()))),
+                Some(Arc::new(modify_rules(run.clone()))),
+            ),
+        }
     }
 
     #[instrument(skip(self))]
@@ -308,13 +450,7 @@ where
 
         debug!(path = ?cwd, "setting up directory");
 
-        let compile_rules = if let Some(rules) = self.context.rules.compile() {
-            trace!(?rules, ?cwd, "Adding cwd to compile rules");
-            let rules = rules.clone().add_read_write(cwd);
-            Some(Arc::new(rules))
-        } else {
-            None
-        };
+        let (compile_rules, run_rules) = self.create_rules(cwd);
 
         trace!("creating files");
         let start = Instant::now();
@@ -329,16 +465,25 @@ where
         debug!(in = ?elapsed, "finished compilation");
 
         trace!("spawning tests");
-        let tests = self.spawn_tests();
+        let tests = self.spawn_tests(cwd, run_rules);
 
         Ok((
             compile_output,
             TestHandle {
+                test_count: self.context.test_cases.len(),
                 joinset: tests,
-                tmpdir,
+                _tmpdir: tmpdir,
             },
         ))
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TestResultState {
+    Pass,
+    RuntimeFail,
+    TimedOut,
+    IncorrectOutput,
 }
 
 #[derive(Debug)]
@@ -346,8 +491,9 @@ pub struct TestResult<T> {
     index: usize,
     /// Option so that it can be taken using [`Self::take_data`]
     data: Option<T>,
-    passed: bool,
     output: SimpleOutput,
+    state: TestResultState,
+    time_taken: Duration,
 }
 
 impl<T> TestResult<T> {
@@ -365,15 +511,48 @@ impl<T> TestResult<T> {
     pub fn data(&self) -> Option<&T> {
         self.data.as_ref()
     }
+
+    pub fn time_taken(&self) -> Duration {
+        self.time_taken
+    }
+
+    pub fn status(&self) -> TestResultState {
+        self.state
+    }
+
+    pub fn output(&self) -> &SimpleOutput {
+        &self.output
+    }
+
+    pub fn stdout(&self) -> &Bytes {
+        &self.output.stdout
+    }
+
+    pub fn stderr(&self) -> &Bytes {
+        &self.output.stderr
+    }
+
+    pub fn exit_status(&self) -> i32 {
+        self.output.status
+    }
 }
 
 pub struct TestHandle<T> {
-    joinset: JoinSet<TestResult<T>>,
-    tmpdir: Option<TmpDir>,
+    joinset: JoinSet<Result<TestResult<T>, SpawnTestError>>,
+    test_count: usize,
+    /// Needed to remove the temp dir when we're done
+    _tmpdir: Option<TmpDir>,
 }
 
 impl<T: 'static> TestHandle<T> {
-    pub async fn wait_next(&mut self) -> Option<Result<TestResult<T>, JoinError>> {
-        self.joinset.join_next().await
+    pub fn test_count(&self) -> usize {
+        self.test_count
+    }
+
+    pub async fn wait_next(&mut self) -> Option<Result<TestResult<T>, SpawnTestError>> {
+        match self.joinset.join_next().await? {
+            Ok(v) => Some(v),
+            Err(e) => Some(Err(SpawnTestError::JoinError(e))),
+        }
     }
 }

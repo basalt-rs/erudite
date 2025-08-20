@@ -1,6 +1,7 @@
-use std::process::Output;
+use std::{borrow::Cow, process::Output};
 
 pub mod context;
+// pub mod old; // TODO: remove me
 pub mod runner;
 
 /// Represents some data that may either be a string or a series of bytes.  The recommended method
@@ -40,6 +41,13 @@ impl Bytes {
         }
     }
 
+    pub fn to_str_lossy(&self) -> Cow<'_, str> {
+        match self {
+            Bytes::String(ref s) => Cow::Borrowed(s),
+            Bytes::Bytes(ref bytes) => String::from_utf8_lossy(bytes),
+        }
+    }
+
     pub fn bytes(&self) -> &[u8] {
         match self {
             Bytes::String(s) => s.as_bytes(),
@@ -70,6 +78,16 @@ pub struct SimpleOutput {
     pub stdout: Bytes,
     pub stderr: Bytes,
     pub status: i32,
+}
+
+impl SimpleOutput {
+    pub(crate) fn new(stdout: impl Into<Bytes>, stderr: impl Into<Bytes>, status: i32) -> Self {
+        Self {
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+            status,
+        }
+    }
 }
 
 impl Default for SimpleOutput {

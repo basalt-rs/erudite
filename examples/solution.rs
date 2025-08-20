@@ -1,14 +1,6 @@
 fn main() {
-    let x = 0;
-    println!(
-        "{}",
-        std::io::stdin()
-            .lines()
-            .next()
-            .unwrap()
-            .unwrap()
-            .chars()
-            .rev()
-            .collect::<String>()
-    );
+    let line = std::io::stdin().lines().next().unwrap().unwrap();
+    eprintln!("length of line: {}", line.len());
+    println!("{}", line.chars().rev().collect::<String>());
+    std::process::exit(1);
 }
