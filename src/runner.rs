@@ -349,7 +349,6 @@ where
 
         let validator = OutputValidator {
             trim_output: context.trim_output,
-            match_case: true, // todo
             expected_output: case.output,
         };
 

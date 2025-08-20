@@ -2,6 +2,7 @@ use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
 use erudite::{context::TestContext, runner::TestFileContent};
 use leucite::Rules;
+use regex::Regex;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -22,7 +23,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let context = TestContext::builder()
         .test("hello world", "dlrow olleh", true)
-        .test("foo", "oof", true)
+        .test("foo", Regex::new(r"\d+").unwrap(), true)
         .test("hello", "olleh", true)
         // .file(FileContent::path("examples/runner.rs"), "./runner.rs")
         .compile_command(["rustc", "--color=always", "-o", "solution", "solution.rs"])

@@ -5,7 +5,9 @@ edition = "2021"
 rust-version = "1.80"
 
 [features]
+full = ["serde", "regex"]
 serde = ["dep:serde"]
+regex = ["dep:regex"]
 
 [dependencies]
 leucite = { version = "1.0.0", features = ["tokio"] }
@@ -16,7 +18,10 @@ serde = { version = "1.0.217", features = ["derive"], optional = true }
 derive_more = { version = "2.0.1", features = ["full"] }
 concat-idents = "1.1.5"
 thiserror = "2.0.15"
+regex = { version = "1.11.1", optional = true }
 
 [dev-dependencies]
+erudite = { path = ".", features = ["full"] }
 tokio = { version = "1.42.0", features = ["full"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+regex = "1.11.1"

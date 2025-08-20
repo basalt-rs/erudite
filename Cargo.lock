@@ -138,7 +138,9 @@ version = "0.1.0"
 dependencies = [
  "concat-idents",
  "derive_more",
+ "erudite",
  "leucite",
+ "regex",
  "serde",
  "thiserror 2.0.15",
  "tmpdir",
