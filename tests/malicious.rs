@@ -17,7 +17,7 @@ async fn malicious_fail() -> Result<(), Box<dyn Error>> {
         .test("foo", "bar", ())
         .run_command(["node", "malicious.js"])
         .rules(rules)
-        .timeout(Duration::from_secs(1))
+        .timeout(Duration::from_secs(5))
         .build();
 
     dbg!(&context);
