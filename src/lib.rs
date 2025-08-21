@@ -88,6 +88,10 @@ impl SimpleOutput {
             status,
         }
     }
+
+    pub fn success(&self) -> bool {
+        self.status != 0
+    }
 }
 
 impl Default for SimpleOutput {

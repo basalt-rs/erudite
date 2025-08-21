@@ -10,7 +10,7 @@ use thiserror::Error;
 use tmpdir::TmpDir;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    process::Command,
+    process::{Child, Command},
     task::{JoinError, JoinSet},
     time::Instant,
     try_join,
@@ -92,8 +92,6 @@ pub enum CompileError {
     WaitFail(#[source] std::io::Error),
     #[error("Invalid compile command specified")]
     InvalidCommand,
-    #[error("Compile command failed with nonzero exit code while running: {}", .0.status)]
-    RunError(SimpleOutput),
     #[error("Failed to create compile/run directory: {:?}", .0)]
     MktempFail(#[source] std::io::Error),
 }
@@ -128,6 +126,84 @@ pub enum CompileAndSpawnError {
     CreateFilesError(#[from] CreateFilesError),
     #[error("failed to spawn tests: {:?}", .0)]
     SpawnTestError(#[from] SpawnTestError),
+}
+
+async fn wait_with_output_and_timeout(
+    child: &mut Child,
+    timeout: Option<Duration>,
+    input: Option<&str>,
+) -> std::io::Result<(SimpleOutput, bool)> {
+    let stdin_input = if let Some(input) = input {
+        Some((child.stdin.take().expect("We only take this once"), input))
+    } else {
+        None
+    };
+    let stdout_pipe = child.stdout.take().expect("We only take this once");
+    let stderr_pipe = child.stderr.take().expect("We only take this once");
+
+    async fn read_to_end<R>(mut r: R) -> std::io::Result<Vec<u8>>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut out = Vec::new();
+        let bytes = r.read_to_end(&mut out).await?;
+        trace!(bytes, "finished reading from stdout");
+        Ok(out)
+    }
+
+    async fn write_input<W>(mut w: W, input: impl AsRef<[u8]>) -> std::io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let input = input.as_ref();
+        let mut bytes = 0;
+        w.write_all(input).await?;
+        bytes += input.len();
+        w.write_u8(b'\n') // Required for empty input to work well in some languages
+            .await?;
+        bytes += 1;
+        trace!(bytes, "finished writing to stdin");
+        Ok(())
+    }
+
+    let stdin_fut = async move {
+        if let Some((stdin_pipe, input)) = stdin_input {
+            write_input(stdin_pipe, input).await
+        } else {
+            Ok(())
+        }
+    };
+    let stdout_fut = read_to_end(stdout_pipe);
+    let stderr_fut = read_to_end(stderr_pipe);
+    let wait_fut = async move {
+        trace!("waiting on test child");
+        let (timed_out, exit_status) = if let Some(timeout) = timeout {
+            match tokio::time::timeout(timeout, child.wait()).await {
+                Ok(Ok(exit_status)) => {
+                    trace!("test ran and successfully waited");
+                    (false, exit_status.code().unwrap_or(1))
+                }
+                Ok(Err(e)) => {
+                    trace!("test ran, but failed while waiting");
+                    return Err(e);
+                }
+                Err(elapsed) => {
+                    trace!(?elapsed, "test timed out");
+                    child.kill().await?;
+                    (true, 0)
+                }
+            }
+        } else {
+            let exit_status = child.wait().await.map(|x| x.code().unwrap_or(1))?;
+            (false, exit_status)
+        };
+        Ok((timed_out, exit_status))
+    };
+
+    let ((), stdout, stderr, (timed_out, exit_status)) =
+        try_join!(stdin_fut, stdout_fut, stderr_fut, wait_fut)?;
+
+    Ok((SimpleOutput::new(stdout, stderr, exit_status), timed_out))
 }
 
 #[must_use]
@@ -214,13 +290,14 @@ where
         &mut self,
         cwd: &Path,
         compile_rules: Option<Arc<Rules>>,
-    ) -> Result<Option<SimpleOutput>, CompileError> {
+    ) -> Result<Option<CompileResult>, CompileError> {
         let Some(compile_command) = self.context.command.compile() else {
             // There is no compile command, and thus no compile step needed
             return Ok(None);
         };
 
-        let output = command_from_argv(compile_command)
+        let start = Instant::now();
+        let mut child = command_from_argv(compile_command)
             .ok_or(CompileError::InvalidCommand)?
             .current_dir(cwd)
             // TODO: write output to temp files, rather than collecting in memory
@@ -235,19 +312,32 @@ where
                 Stdio::null()
             })
             .restrict_if(compile_rules)
-            .max_memory_if(self.context.max_memory.compile().copied())
-            .max_file_size_if(self.context.max_file_size.compile().copied())
+            .max_memory_if(self.context.max_memory.run().copied())
+            .max_file_size_if(self.context.max_file_size.run().copied())
+            .max_threads_if(self.context.max_threads.run().copied())
             .spawn()
-            .map_err(CompileError::SpawnFail)?
-            .wait_with_output()
-            .await
-            .map_err(CompileError::WaitFail)?;
+            .map_err(CompileError::SpawnFail)?;
 
-        if !output.status.success() {
-            return Err(CompileError::RunError(output.into()));
-        }
+        let (output, timed_out) =
+            wait_with_output_and_timeout(&mut child, self.context.timeout.compile().copied(), None)
+                .await
+                .map_err(CompileError::WaitFail)?;
 
-        Ok(Some(output.into()))
+        let state = if timed_out {
+            CompileResultState::TimedOut
+        } else if output.success() {
+            CompileResultState::Pass
+        } else {
+            CompileResultState::RuntimeFail
+        };
+
+        let time_taken = start.elapsed();
+
+        Ok(Some(CompileResult {
+            output,
+            state,
+            time_taken,
+        }))
     }
 
     async fn run_test(
@@ -265,87 +355,22 @@ where
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
             .restrict_if(run_rules)
             .max_memory_if(context.max_memory.run().copied())
-            .max_file_size_if(context.max_memory.run().copied())
+            .max_file_size_if(context.max_file_size.run().copied())
             .max_threads_if(context.max_threads.run().copied())
             .spawn()
             .map_err(SpawnTestError::SpawnFail)?;
 
-        let stdin_pipe = child.stdin.take().expect("We only take this once");
-        let stdout_pipe = child.stdout.take().expect("We only take this once");
-        let stderr_pipe = child.stderr.take().expect("We only take this once");
+        let (output, timed_out) = wait_with_output_and_timeout(
+            &mut child,
+            context.timeout.run().copied(),
+            Some(&case.input),
+        )
+        .await
+        .map_err(SpawnTestError::WaitFail)?;
 
-        async fn read_to_end<R>(mut r: R) -> Result<Vec<u8>, SpawnTestError>
-        where
-            R: AsyncRead + Unpin,
-        {
-            let mut out = Vec::new();
-            let bytes = r
-                .read_to_end(&mut out)
-                .await
-                .map_err(SpawnTestError::WaitFail)?;
-            trace!(bytes, "finished reading from stdout");
-            Ok(out)
-        }
-
-        async fn write_input<W>(mut w: W, input: impl AsRef<[u8]>) -> Result<(), SpawnTestError>
-        where
-            W: AsyncWrite + Unpin,
-        {
-            let input = input.as_ref();
-            let mut bytes = 0;
-            w.write_all(input)
-                .await
-                .map_err(SpawnTestError::WriteStdinFail)?;
-            bytes += input.len();
-            w.write_u8(b'\n') // Required for empty input to work in some languages
-                .await
-                .map_err(SpawnTestError::WriteStdinFail)?;
-            bytes += 1;
-            trace!(bytes, "finished writing to stdin");
-            Ok(())
-        }
-
-        let stdin_fut = write_input(stdin_pipe, &case.input);
-        let stdout_fut = read_to_end(stdout_pipe);
-        let stderr_fut = read_to_end(stderr_pipe);
-        let timeout = context.timeout.run().copied();
-        let wait_fut = async move {
-            trace!("waiting on test child");
-            let (timed_out, exit_status) = if let Some(timeout) = timeout {
-                match tokio::time::timeout(timeout, child.wait()).await {
-                    Ok(Ok(exit_status)) => {
-                        trace!("test ran and successfully waited");
-                        (false, exit_status.code().unwrap_or(1))
-                    }
-                    Ok(Err(e)) => {
-                        trace!("test ran, but failed while waiting");
-                        return Err(SpawnTestError::WaitFail(e));
-                    }
-                    Err(elapsed) => {
-                        trace!(?elapsed, "test timed out");
-                        (true, 0)
-                    }
-                }
-            } else {
-                let exit_status = child
-                    .wait()
-                    .await
-                    .map_err(SpawnTestError::WaitFail)
-                    .map(|x| x.code().unwrap_or(1))?;
-                (false, exit_status)
-            };
-            Ok((timed_out, exit_status, start.elapsed()))
-        };
-
-        let ((), stdout, stderr, (timed_out, exit_status, time_taken)) =
-            try_join!(stdin_fut, stdout_fut, stderr_fut, wait_fut)?;
-
-        trace!(?time_taken, ?timed_out, ?exit_status, "test finished");
-
-        let output = SimpleOutput::new(stdout, stderr, exit_status);
+        let time_taken = start.elapsed();
 
         let validator = OutputValidator {
             trim_output: context.trim_output,
@@ -429,7 +454,7 @@ where
     #[instrument(skip(self))]
     pub async fn compile_and_spawn_runner(
         mut self,
-    ) -> Result<(Option<SimpleOutput>, TestHandle<T>), CompileAndSpawnError> {
+    ) -> Result<(Option<CompileResult>, TestHandle<T>), CompileAndSpawnError> {
         let mut tmpdir = None;
         let cwd = if let Some(cwd) = self.cwd.take() {
             trace!(?cwd, "Using specified cwd");
@@ -469,7 +494,6 @@ where
         Ok((
             compile_output,
             TestHandle {
-                test_count: self.context.test_cases.len(),
                 joinset: tests,
                 _tmpdir: tmpdir,
             },
@@ -515,7 +539,7 @@ impl<T> TestResult<T> {
         self.time_taken
     }
 
-    pub fn status(&self) -> TestResultState {
+    pub fn state(&self) -> TestResultState {
         self.state
     }
 
@@ -538,20 +562,82 @@ impl<T> TestResult<T> {
 
 pub struct TestHandle<T> {
     joinset: JoinSet<Result<TestResult<T>, SpawnTestError>>,
-    test_count: usize,
     /// Needed to remove the temp dir when we're done
     _tmpdir: Option<TmpDir>,
 }
 
 impl<T: 'static> TestHandle<T> {
-    pub fn test_count(&self) -> usize {
-        self.test_count
+    pub fn len(&self) -> usize {
+        self.joinset.len()
     }
 
-    pub async fn wait_next(&mut self) -> Option<Result<TestResult<T>, SpawnTestError>> {
-        match self.joinset.join_next().await? {
-            Ok(v) => Some(v),
-            Err(e) => Some(Err(SpawnTestError::JoinError(e))),
+    pub fn is_empty(&self) -> bool {
+        self.joinset.is_empty()
+    }
+
+    pub async fn wait_next(&mut self) -> Result<Option<TestResult<T>>, SpawnTestError> {
+        match self.joinset.join_next().await {
+            Some(Err(e)) => Err(SpawnTestError::JoinError(e)),
+            Some(Ok(v)) => Ok(Some(v?)),
+            None => Ok(None),
         }
+    }
+
+    pub async fn wait_all(&mut self) -> Result<Vec<TestResult<T>>, SpawnTestError> {
+        let len = self.len();
+        let mut out = Vec::with_capacity(len);
+        let out_slice = out.spare_capacity_mut();
+        let mut added = 0;
+        while let Some(result) = self.wait_next().await? {
+            out_slice[result.index()].write(result);
+            added += 1;
+        }
+        assert_eq!(added, len);
+        assert_eq!(added, out.capacity());
+        // SAFETY: If added == test_count == capacity, then we have assigned every value within the
+        // allocated vector, so the vector has has `len = added`
+        unsafe { out.set_len(added) };
+
+        Ok(out)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CompileResultState {
+    Pass,
+    RuntimeFail,
+    TimedOut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompileResult {
+    output: SimpleOutput,
+    state: CompileResultState,
+    time_taken: Duration,
+}
+
+impl CompileResult {
+    pub fn time_taken(&self) -> Duration {
+        self.time_taken
+    }
+
+    pub fn state(&self) -> CompileResultState {
+        self.state
+    }
+
+    pub fn output(&self) -> &SimpleOutput {
+        &self.output
+    }
+
+    pub fn stdout(&self) -> &Bytes {
+        &self.output.stdout
+    }
+
+    pub fn stderr(&self) -> &Bytes {
+        &self.output.stderr
+    }
+
+    pub fn exit_status(&self) -> i32 {
+        self.output.status
     }
 }

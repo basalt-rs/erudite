@@ -37,7 +37,7 @@ pub struct TestContextBuilder<Tests, RunCmd, T: 'static = ()> {
 }
 
 impl<T> TestContextBuilder<MissingTests, MissingRunCmd, T> {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             trim_output: true,
             test_cases: Vec::new(),

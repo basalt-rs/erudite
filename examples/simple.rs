@@ -48,13 +48,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     dbg!(&compile_output);
 
     if let Some(compile_output) = compile_output {
-        eprintln!("STDOUT:\n{}", compile_output.stdout.to_str_lossy());
-        eprintln!("STDERR:\n{}", compile_output.stderr.to_str_lossy());
-        eprintln!("STATUS: {}", compile_output.status);
+        eprintln!("STDOUT:\n{}", compile_output.stdout().to_str_lossy());
+        eprintln!("STDERR:\n{}", compile_output.stderr().to_str_lossy());
+        eprintln!("STATUS: {}", compile_output.exit_status());
     }
 
-    while let Some(test) = tests.wait_next().await {
-        let test = test.unwrap();
+    while let Some(test) = tests.wait_next().await? {
         info!("tests[{}] = {:?}", test.index(), test);
     }
 
