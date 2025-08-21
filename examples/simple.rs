@@ -36,12 +36,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     dbg!(&context);
 
     let (compile_output, mut tests) = Arc::new(context)
-        .test_builder()
+        .test_runner()
         .file(
             TestFileContent::string(include_str!("./solution.rs")),
             Path::new("./solution.rs"),
         )
-        .filter_tests(|test| test.data)
+        .filter_tests(|test| *test.data())
         .compile_and_spawn_runner()
         .await?;
 

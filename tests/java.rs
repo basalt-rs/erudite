@@ -29,7 +29,7 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
     let context = Arc::new(context);
 
     let (compile, mut tests) = context
-        .test_builder()
+        .test_runner()
         .file(
             TestFileContent::string(include_str!("./Solution.java")),
             Path::new("Solution.java"),
@@ -86,7 +86,7 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
     let context = Arc::new(context);
 
     let (compile, _tests) = context
-        .test_builder()
+        .test_runner()
         .file(
             TestFileContent::string(include_str!("./Solution.java")),
             Path::new("Solution.java"),

@@ -4,6 +4,9 @@ pub mod context;
 // pub mod old; // TODO: remove me
 pub mod runner;
 
+// Re-exports so the consumer doesn't need to depend on leucite directly
+pub use leucite::{MemorySize, Rules};
+
 /// Represents some data that may either be a string or a series of bytes.  The recommended method
 /// for constructing this type is to use [`From::from`] which will automatically choose the
 /// appropriate variant for the data.

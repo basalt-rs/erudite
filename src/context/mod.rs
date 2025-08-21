@@ -7,8 +7,8 @@ use std::{
 use derive_more::From;
 use leucite::{MemorySize, Rules};
 
-pub mod builder;
-use builder::{MissingRunCmd, MissingTests, TestContextBuilder};
+mod builder;
+pub use builder::TestContextBuilder;
 
 use crate::runner::TestRunner;
 
@@ -77,17 +77,15 @@ impl OutputValidator {
     }
 }
 
-/// A test case which has an input and expected output
+/// A test case which contains input, output, and some associated data
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TestCase<T> {
-    pub input: String,
-    pub output: ExpectedOutput,
-    pub data: T,
+pub struct TestCase<T = ()> {
+    pub(crate) input: String,
+    pub(crate) output: ExpectedOutput,
+    pub(crate) data: T,
 }
 
 impl<T> TestCase<T> {
-    /// Create a new test case from input and output
     pub fn new(input: impl Into<String>, output: impl Into<ExpectedOutput>, data: T) -> Self {
         Self {
             input: input.into(),
@@ -95,18 +93,64 @@ impl<T> TestCase<T> {
             data,
         }
     }
+
+    /// Retrieve the input value associated with this test case
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+
+    /// Retrieve the expected output for this test case
+    pub fn output(&self) -> &ExpectedOutput {
+        &self.output
+    }
+
+    /// Get the data assocated with this test case
+    ///
+    /// See also: [`TestCase::into_data`]
+    pub fn data(&self) -> &T {
+        &self.data
+    }
+
+    /// Get the owned data assocated with this test case
+    ///
+    /// See also: [`TestCase::data`]
+    pub fn into_data(self) -> T {
+        self.data
+    }
+}
+
+impl<I, O, T> From<(I, O)> for TestCase<T>
+where
+    I: Into<String>,
+    O: Into<ExpectedOutput>,
+    T: Default,
+{
+    fn from((input, output): (I, O)) -> Self {
+        Self::new(input, output, T::default())
+    }
+}
+
+impl<I, O, T> From<(I, O, T)> for TestCase<T>
+where
+    I: Into<String>,
+    O: Into<ExpectedOutput>,
+{
+    fn from((input, output, data): (I, O, T)) -> Self {
+        Self::new(input, output, data)
+    }
 }
 
 /// Configuration for how a file should be setup for test cases to be run
+// TODO: should this be pub?
 #[derive(Clone, Debug)]
-pub struct FileConfig {
+pub(crate) struct FileConfig {
     /// This path is relative to the temporary directory created while running tests
     dest: PathBuf,
     src: FileContent,
 }
 
 impl FileConfig {
-    pub async fn write_file(&self, base: &Path) -> std::io::Result<u64> {
+    pub(crate) async fn write_file(&self, base: &Path) -> std::io::Result<u64> {
         let target = base.join(&self.dest);
         match self.src {
             FileContent::Path(ref path) => tokio::fs::copy(path, target).await,
@@ -116,39 +160,64 @@ impl FileConfig {
         }
     }
 
-    pub fn dest(&self) -> &Path {
+    pub(crate) fn dest(&self) -> &Path {
         &self.dest
     }
 }
 
+/// Representation of the content of a file to be added into a test environment
+///
+/// [`FileContent::Path`] represents a path on the host system.  The test runner will copy from
+/// this path into the test environment _at compile time_.  If the data should be loaded now,
+/// consider using [`FileContent::Bytes`].
+///
+/// [`FileContent::Bytes`] contains a vec of bytes that will be written to the file when the tests
+/// are compiled.
 #[derive(Clone, Debug)]
 pub enum FileContent {
     /// Copies a file directly from this path
     ///
-    /// NOTE: This happens when the tests are actually run.  If you want to load the file into
+    /// NOTE: This happens when the tests are compiled/run.  If you want to load the file into
     /// memory first, use [`FileContent::Bytes`].
     Path(PathBuf),
     /// Creates a new file with this content
-    Bytes(Box<[u8]>),
+    Bytes(Vec<u8>),
 }
 
 impl FileContent {
+    /// Construct a `FileContent::Path` from something that's like a path
+    ///
+    /// ```
+    /// # use erudite::context::FileContent;
+    /// let content = FileContent::path("/foo/bar");
+    /// ```
     pub fn path(path: impl Into<PathBuf>) -> Self {
         Self::Path(path.into())
     }
 
+    /// Construct a `FileContent::Bytes` from something that's like a string.
+    ///
+    /// ```
+    /// # use erudite::context::FileContent;
+    /// let content = FileContent::string("// some rust code");
+    /// ```
     pub fn string(string: impl Into<String>) -> Self {
-        let string: String = string.into();
-        Self::bytes(string.into_boxed_str())
+        Self::bytes(string.into())
     }
 
-    pub fn bytes(bytes: impl Into<Box<[u8]>>) -> Self {
+    /// Construct a `FileContent::Bytes` from raw bytes
+    ///
+    /// ```
+    /// # use erudite::context::FileContent;
+    /// let content = FileContent::bytes([0xfa, 0xca, 0xde]);
+    /// ```
+    pub fn bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self::Bytes(bytes.into())
     }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum CommandConfig<T> {
+pub(crate) enum CommandConfig<T> {
     None,
     Compile(T),
     Run(T),
@@ -163,10 +232,6 @@ impl<T> Default for CommandConfig<T> {
 }
 
 impl<T> CommandConfig<T> {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
     // Can't use From/Into traits because T might be the same as U
     pub fn into<U>(self) -> CommandConfig<U>
     where
@@ -248,11 +313,13 @@ pub struct TestContext<T> {
 }
 
 impl<T> TestContext<T> {
-    pub fn builder() -> TestContextBuilder<MissingTests, MissingRunCmd, T> {
+    /// Construct a builder for [`TestContext`], see [`TestContextBuilder`] for more details.
+    pub fn builder() -> TestContextBuilder<T> {
         TestContextBuilder::new()
     }
 
-    pub fn test_builder(self: Arc<Self>) -> TestRunner<'static, T> {
+    /// Create a [`TestRunner`] from this context.  See [`TestRunner`] for more details.
+    pub fn test_runner<'a>(self: Arc<Self>) -> TestRunner<'a, T> {
         TestRunner::new(self)
     }
 }

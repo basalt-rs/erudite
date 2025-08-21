@@ -24,7 +24,7 @@ async fn malicious_fail() -> Result<(), Box<dyn Error>> {
     let context = Arc::new(context);
 
     let (compile, mut tests) = context
-        .test_builder()
+        .test_runner()
         .file(
             TestFileContent::string(include_str!("./malicious.js")),
             Path::new("malicious.js"),
