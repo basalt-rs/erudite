@@ -107,7 +107,11 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
     for x in compile.stderr().to_str_lossy().lines() {
         eprintln!("    {x}");
     }
-    assert!(compile.stderr().str().unwrap().contains("file not found"));
+    assert!(compile
+        .stderr()
+        .as_str()
+        .unwrap()
+        .contains("file not found"));
     assert_eq!(compile.state(), CompileResultState::RuntimeFail);
 
     Ok(())

@@ -381,7 +381,7 @@ where
             TestResultState::TimedOut
         } else if output.status != 0 {
             TestResultState::RuntimeFail
-        } else if let Some(stdout) = output.stdout.str() {
+        } else if let Some(stdout) = output.stdout.as_str() {
             if validator.is_valid(stdout) {
                 TestResultState::Pass
             } else {

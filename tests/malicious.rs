@@ -45,7 +45,7 @@ async fn malicious_fail() -> Result<(), Box<dyn Error>> {
         assert_eq!(x.state(), TestResultState::RuntimeFail);
         assert_eq!(x.exit_status(), 1);
         assert!(x.stdout().is_empty());
-        assert!(x.stderr().str().unwrap().contains("permission denied"));
+        assert!(x.stderr().as_str().unwrap().contains("permission denied"));
     }
 
     Ok(())

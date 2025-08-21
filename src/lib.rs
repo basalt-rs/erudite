@@ -1,4 +1,4 @@
-use std::{borrow::Cow, process::Output};
+use std::borrow::Cow;
 
 pub mod context;
 // pub mod old; // TODO: remove me
@@ -11,18 +11,12 @@ pub use leucite::{MemorySize, Rules};
 /// for constructing this type is to use [`From::from`] which will automatically choose the
 /// appropriate variant for the data.
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(untagged))]
 pub enum Bytes {
     String(String),
     Bytes(Vec<u8>),
 }
 
 impl Bytes {
-    pub const fn empty() -> Self {
-        Self::Bytes(Vec::new())
-    }
-
     pub fn len(&self) -> usize {
         match self {
             Bytes::String(s) => s.len(),
@@ -37,7 +31,7 @@ impl Bytes {
         }
     }
 
-    pub fn str(&self) -> Option<&str> {
+    pub fn as_str(&self) -> Option<&str> {
         match self {
             Bytes::String(s) => Some(s),
             Bytes::Bytes(_) => None,
@@ -59,12 +53,6 @@ impl Bytes {
     }
 }
 
-impl From<String> for Bytes {
-    fn from(value: String) -> Self {
-        Self::String(value)
-    }
-}
-
 impl From<Vec<u8>> for Bytes {
     fn from(value: Vec<u8>) -> Self {
         String::from_utf8(value)
@@ -74,13 +62,11 @@ impl From<Vec<u8>> for Bytes {
     }
 }
 
-/// Data which can be returned from a command
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SimpleOutput {
-    pub stdout: Bytes,
-    pub stderr: Bytes,
-    pub status: i32,
+    stdout: Bytes,
+    stderr: Bytes,
+    status: i32,
 }
 
 impl SimpleOutput {
@@ -92,27 +78,77 @@ impl SimpleOutput {
         }
     }
 
+    pub fn stdout(&self) -> &Bytes {
+        &self.stdout
+    }
+
+    pub fn stderr(&self) -> &Bytes {
+        &self.stderr
+    }
+
+    pub fn exit_status(&self) -> i32 {
+        self.status
+    }
+
     pub fn success(&self) -> bool {
         self.status == 0
     }
 }
 
-impl Default for SimpleOutput {
-    fn default() -> Self {
-        Self {
-            stdout: Bytes::empty(),
-            stderr: Bytes::empty(),
-            status: 0,
-        }
-    }
-}
+#[cfg(test)]
+mod test {
+    use super::*;
 
-impl From<Output> for SimpleOutput {
-    fn from(value: Output) -> Self {
-        Self {
-            stdout: value.stdout.into(),
-            stderr: value.stderr.into(),
-            status: value.status.code().unwrap_or(0),
-        }
+    #[test]
+    fn bytes_from_vec() {
+        const BYTES: &[u8] = &[0xc3, 0x00, b'h', b'i'];
+        let bytes = Bytes::from(BYTES.to_vec()); // not a valid string
+        assert!(matches!(bytes, Bytes::Bytes(_)));
+        assert_eq!(bytes.bytes(), BYTES);
+        assert!(bytes.as_str().is_none());
+        assert_eq!(bytes.to_str_lossy(), "�\0hi");
+        assert_eq!(bytes.len(), 4);
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn bytes_from_string_vec() {
+        const STRING: &str = "hello";
+        const BYTES: &[u8] = STRING.as_bytes();
+        let bytes = Bytes::from(BYTES.to_vec()); // not a valid string
+        assert!(matches!(bytes, Bytes::String(_)));
+        assert_eq!(bytes.bytes(), BYTES);
+        assert_eq!(bytes.as_str(), Some(STRING));
+        assert_eq!(bytes.to_str_lossy(), STRING);
+        assert_eq!(bytes.len(), STRING.len());
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn simple_output_success() {
+        let out = SimpleOutput::new(
+            "hello".to_string().into_bytes(),
+            "world".to_string().into_bytes(),
+            0,
+        );
+
+        assert_eq!(out.stdout().as_str(), Some("hello"));
+        assert_eq!(out.stderr().as_str(), Some("world"));
+        assert_eq!(out.exit_status(), 0);
+        assert!(out.success());
+    }
+
+    #[test]
+    fn simple_output_fail() {
+        let out = SimpleOutput::new(
+            "hello".to_string().into_bytes(),
+            "world".to_string().into_bytes(),
+            1,
+        );
+
+        assert_eq!(out.stdout().as_str(), Some("hello"));
+        assert_eq!(out.stderr().as_str(), Some("world"));
+        assert_eq!(out.exit_status(), 1);
+        assert!(!out.success());
     }
 }

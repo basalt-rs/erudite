@@ -12,39 +12,11 @@ pub use builder::TestContextBuilder;
 
 use crate::runner::TestRunner;
 
-#[cfg(all(feature = "serde", feature = "regex"))]
-mod regex_serde {
-    use std::borrow::Cow;
-
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S>(value: &regex::Regex, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        value.as_str().serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(d: D) -> Result<regex::Regex, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <Cow<str>>::deserialize(d)?;
-
-        s.parse().map_err(serde::de::Error::custom)
-    }
-}
-
 #[derive(Debug, Clone, From)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExpectedOutput {
     String(#[from] String),
     #[cfg(feature = "regex")]
-    Regex(
-        #[from]
-        #[serde(with = "regex_serde")]
-        regex::Regex,
-    ),
+    Regex(#[from] regex::Regex),
 }
 
 impl From<&str> for ExpectedOutput {
