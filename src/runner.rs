@@ -201,7 +201,7 @@ async fn wait_with_output_and_timeout(
     };
 
     let ((), stdout, stderr, (timed_out, exit_status)) =
-        try_join!(stdin_fut, stdout_fut, stderr_fut, wait_fut)?;
+        dbg!(try_join!(stdin_fut, stdout_fut, stderr_fut, wait_fut))?;
 
     Ok((SimpleOutput::new(stdout, stderr, exit_status), timed_out))
 }
@@ -584,6 +584,12 @@ impl<T: 'static> TestHandle<T> {
     }
 
     pub async fn wait_all(&mut self) -> Result<Vec<TestResult<T>>, SpawnTestError> {
+        let path = self._tmpdir.as_ref().unwrap();
+        let mut x = tokio::fs::read_dir(path).await.unwrap();
+        while let Some(e) = x.next_entry().await.unwrap() {
+            dbg!(e.path());
+        }
+
         let len = self.len();
         let mut out = Vec::with_capacity(len);
         let out_slice = out.spare_capacity_mut();

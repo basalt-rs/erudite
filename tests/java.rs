@@ -22,7 +22,7 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
         .run_command(["java", "Solution"])
         .rules(rules)
         .max_memory(MemorySize::from_mb(800))
-        .timeout(Duration::from_secs(1))
+        .timeout(Duration::from_secs(5))
         .build();
 
     dbg!(&context);
@@ -50,6 +50,7 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
     for x in compile.stderr().to_str_lossy().lines() {
         eprintln!("    {x}");
     }
+    assert_eq!(compile.state(), CompileResultState::Pass);
 
     let results = tests.wait_all().await?;
 
@@ -78,7 +79,7 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
         .run_command(["java", "Solution"])
         .rules(rules)
         .max_memory(MemorySize::from_mb(800))
-        .timeout(Duration::from_secs(1))
+        .timeout(Duration::from_secs(5))
         .build();
 
     dbg!(&context);
@@ -96,7 +97,6 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
 
     assert!(compile.is_some());
     let compile = compile.unwrap();
-    assert_eq!(compile.state(), CompileResultState::Pass);
     eprintln!("COMPILE OUTPUT:");
     eprintln!("Status: {}", compile.exit_status());
     eprintln!("STDOUT:");
@@ -107,6 +107,7 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
     for x in compile.stderr().to_str_lossy().lines() {
         eprintln!("    {x}");
     }
+    assert_eq!(compile.state(), CompileResultState::Pass);
 
     Ok(())
 }

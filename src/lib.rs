@@ -90,7 +90,7 @@ impl SimpleOutput {
     }
 
     pub fn success(&self) -> bool {
-        self.status != 0
+        self.status == 0
     }
 }
 
