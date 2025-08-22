@@ -78,6 +78,12 @@ impl From<&Path> for FileContent {
     }
 }
 
+impl From<&[u8]> for FileContent {
+    fn from(value: &[u8]) -> Self {
+        Self::bytes(value)
+    }
+}
+
 impl FileContent {
     /// Construct a `FileContent::Path` from something that's like a path
     ///
