@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 pub mod context;
-// pub mod old; // TODO: remove me
+pub mod error;
 pub mod runner;
 
 // Re-exports so the consumer doesn't need to depend on leucite directly

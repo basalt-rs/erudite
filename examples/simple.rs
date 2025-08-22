@@ -35,23 +35,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     dbg!(&context);
 
-    let (compile_output, mut tests) = Arc::new(context)
+    let compiled = Arc::new(context)
         .test_runner()
         .file(
             TestFileContent::string(include_str!("./solution.rs")),
             Path::new("./solution.rs"),
         )
         .filter_tests(|test| *test.data())
-        .compile_and_spawn_runner()
+        .compile()
         .await?;
 
-    dbg!(&compile_output);
+    let compile_output = compiled.compile_result();
+
+    dbg!(compile_output);
 
     if let Some(compile_output) = compile_output {
         eprintln!("STDOUT:\n{}", compile_output.stdout().to_str_lossy());
         eprintln!("STDERR:\n{}", compile_output.stderr().to_str_lossy());
         eprintln!("STATUS: {}", compile_output.exit_status());
     }
+
+    let mut tests = compiled.run();
 
     while let Some(test) = tests.wait_next().await? {
         info!("tests[{}] = {:?}", test.index(), test);

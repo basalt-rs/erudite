@@ -23,20 +23,20 @@ async fn malicious_fail() -> Result<(), Box<dyn Error>> {
     dbg!(&context);
     let context = Arc::new(context);
 
-    let (compile, mut tests) = context
+    let compiled = context
         .test_runner()
         .file(
             TestFileContent::string(include_str!("./malicious.js")),
             Path::new("malicious.js"),
         )
         .collect_output(true)
-        .compile_and_spawn_runner()
+        .compile()
         .await?;
 
     // compile == None because there is no compile step
-    assert!(compile.is_none());
+    assert!(compiled.compile_result().is_none());
 
-    let out = tests.wait_all().await?;
+    let out = compiled.run().wait_all().await?;
 
     for x in out {
         eprintln!("State: {:?}\n", x.state());

@@ -16,6 +16,7 @@ macro_rules! define_state_structs {
     };
 }
 
+// NOTE: this is hidden to reduce potential misuse
 pub(crate) mod hidden {
     define_state_structs! {
         MissingTests => SetTests,
@@ -26,6 +27,10 @@ use hidden::*;
 
 /// A builder that will crate a [`TestContext`].  This builder uses a type-state pattern to ensure
 /// that the require fields are all present.
+///
+/// The fields `timeout`, `rules`, `max_memory`, `max_file_size`, and `max_threads` can be set for
+/// runtime, compile-time, or both.  These methods have a pattern of `run_<field>` for runtime
+/// only, `compile_<field>` for compile-time only, or `<field>` for both runtime and compile-time.
 ///
 /// # Usage
 ///
@@ -49,6 +54,8 @@ use hidden::*;
 ///     .max_threads(2)                         // or `run_max_threads`/`compile_max_threads`
 ///     .build();
 /// ```
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct TestContextBuilder<T, Tests = MissingTests, RunCmd = MissingRunCmd> {
     command: CommandConfig<Vec<String>>, // Compile: optional, Run: required
     test_cases: Vec<TestCase<T>>,        // required (at least once)
@@ -67,7 +74,7 @@ impl<T> TestContextBuilder<T, MissingTests, MissingRunCmd> {
     // Construction of this type should only be done with [`TestContext::builder`].
     pub(crate) fn new() -> Self {
         Self {
-            trim_output: true,
+            trim_output: false,
             test_cases: Vec::new(),
             files: Vec::new(),
             command: Default::default(),
@@ -131,12 +138,15 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// Set whether the tests should trim the output of the program before testing (using
     /// [`str::trim`])
     ///
+    /// Default = `false`
+    ///
     /// ```
     /// # use erudite::context::TestContext;
     /// let ctx = TestContext::builder()
     ///     .compile_command(["gcc", "-o", "solution", "solution.c"])
     ///     .run_command(["solution.c"])
     ///     .test("hello world", "dlrow olleh", true)
+    ///     .trim_output(true)
     ///     .build();
     /// ```
     pub fn trim_output(mut self, trim_output: bool) -> Self {

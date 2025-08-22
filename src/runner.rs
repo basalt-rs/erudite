@@ -6,19 +6,19 @@ use std::{
 };
 
 use leucite::{CommandExt, Rules};
-use thiserror::Error;
 use tmpdir::TmpDir;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     process::{Child, Command},
-    task::{JoinError, JoinSet},
+    task::JoinSet,
     time::Instant,
     try_join,
 };
-use tracing::{debug, debug_span, error, instrument, trace, Instrument};
+use tracing::{debug, debug_span, instrument, trace, Instrument};
 
 use crate::{
     context::{CommandConfig, OutputValidator, TestCase, TestContext},
+    error::{CompileError, CreateFilesError, SpawnTestError},
     Bytes, SimpleOutput,
 };
 
@@ -48,6 +48,7 @@ impl TestFileConfig<'_> {
     }
 }
 
+#[doc(hidden)]
 pub trait AsyncReadUnpin: AsyncRead + Unpin {}
 impl<T> AsyncReadUnpin for T where T: AsyncRead + Unpin {}
 
@@ -84,50 +85,6 @@ fn command_from_argv(argv: &[String]) -> Option<Command> {
     Some(cmd)
 }
 
-#[derive(Debug, Error)]
-pub enum CompileError {
-    #[error("Failed to spawn compile command: {:?}", .0)]
-    SpawnFail(#[source] std::io::Error),
-    #[error("Failed to wait on compile command: {:?}", .0)]
-    WaitFail(#[source] std::io::Error),
-    #[error("Invalid compile command specified")]
-    InvalidCommand,
-    #[error("Failed to create compile/run directory: {:?}", .0)]
-    MktempFail(#[source] std::io::Error),
-}
-
-#[derive(Debug, Error)]
-#[error("Failed to create file at {}: {:?}", .path.display(), .error)]
-pub struct CreateFilesError {
-    path: PathBuf,
-    #[source]
-    error: std::io::Error,
-}
-
-#[derive(Debug, Error)]
-pub enum SpawnTestError {
-    #[error("Failed to join thread: {:?}", .0)]
-    JoinError(JoinError),
-    #[error("Invalid run command specified")]
-    InvalidCommand,
-    #[error("Failed to spawn run command: {:?}", .0)]
-    SpawnFail(#[source] std::io::Error),
-    #[error("Failed to write to stdin of test program: {:?}", .0)]
-    WriteStdinFail(#[source] std::io::Error),
-    #[error("Failed to wait on run command: {:?}", .0)]
-    WaitFail(#[source] std::io::Error),
-}
-
-#[derive(Debug, Error)]
-pub enum CompileAndSpawnError {
-    #[error("failed to compile compile: {:?}", .0)]
-    CompileError(#[from] CompileError),
-    #[error("failed to create necessary files: {:?}", .0)]
-    CreateFilesError(#[from] CreateFilesError),
-    #[error("failed to spawn tests: {:?}", .0)]
-    SpawnTestError(#[from] SpawnTestError),
-}
-
 async fn wait_with_output_and_timeout(
     child: &mut Child,
     timeout: Option<Duration>,
@@ -159,8 +116,8 @@ async fn wait_with_output_and_timeout(
         let mut bytes = 0;
         w.write_all(input).await?;
         bytes += input.len();
-        w.write_u8(b'\n') // Required for empty input to work well in some languages
-            .await?;
+        // Required for empty input to work well in some languages
+        w.write_u8(b'\n').await?;
         bytes += 1;
         trace!(bytes, "finished writing to stdin");
         Ok(())
@@ -286,7 +243,7 @@ where
     /// Err(_)      - Error while spawning/running compile command
     /// If `collect_output` is false, only the `status` field on the returned result (ok or err) is
     /// set to the correct value.
-    async fn compile(
+    async fn compile_impl(
         &mut self,
         cwd: &Path,
         compile_rules: Option<Arc<Rules>>,
@@ -340,6 +297,104 @@ where
         }))
     }
 
+    fn create_rules(&self, cwd: &Path) -> (Option<Arc<Rules>>, Option<Arc<Rules>>) {
+        let modify_rules = |rules: Rules| -> Rules { rules.clone().add_read_write(cwd) };
+        match &self.context.rules {
+            CommandConfig::None => (None, None),
+            CommandConfig::Compile(ref r) => (Some(Arc::new(modify_rules(r.clone()))), None),
+            CommandConfig::Run(ref r) => (None, Some(Arc::new(modify_rules(r.clone())))),
+            CommandConfig::Equal(ref r) => {
+                // Done this way to only create once instance of the rules and just Arc::clone it
+                let r = modify_rules(r.clone());
+                let r = Arc::new(r);
+                (Some(Arc::clone(&r)), Some(r))
+            }
+            CommandConfig::Different { compile, run } => (
+                Some(Arc::new(modify_rules(compile.clone()))),
+                Some(Arc::new(modify_rules(run.clone()))),
+            ),
+        }
+    }
+
+    // TODO: Note in docs that this function does nothing if there is no compile command
+    pub async fn compile(mut self) -> Result<CompiledTestRunner<'a, T>, CompileError> {
+        let mut tmpdir = None;
+        let cwd = if let Some(cwd) = self.cwd.take() {
+            trace!(?cwd, "Using specified cwd");
+            cwd.to_path_buf()
+        } else {
+            trace!("Creating temp dir");
+            tmpdir = Some(
+                TmpDir::new("erudite")
+                    .await
+                    .map_err(CompileError::MktempFail)?,
+            );
+            tmpdir
+                .as_ref()
+                .expect("we literally just assigned it")
+                .to_path_buf()
+        };
+
+        debug!(path = ?cwd, "setting up directory");
+
+        let (compile_rules, run_rules) = self.create_rules(&cwd);
+
+        trace!("creating files");
+        let start = Instant::now();
+        self.create_files(&cwd).await?;
+        let elapsed = start.elapsed();
+        debug!(in = ?elapsed, "created files");
+
+        debug!(?cwd, "starting compilation");
+        let start = Instant::now();
+        let compile_output = self.compile_impl(&cwd, compile_rules).await?;
+        let elapsed = start.elapsed();
+        debug!(in = ?elapsed, "finished compilation");
+
+        Ok(CompiledTestRunner {
+            test_runner: self,
+            run_rules,
+            cwd,
+            tmpdir,
+            compile_result: compile_output,
+        })
+    }
+
+    pub async fn compile_and_run(self) -> Result<TestHandle<T>, SpawnTestError> {
+        Ok(self
+            .compile()
+            .await
+            .expect("No compile step, so can not error")
+            .run())
+    }
+}
+
+pub struct CompiledTestRunner<'a, T> {
+    test_runner: TestRunner<'a, T>,
+    cwd: PathBuf,
+    tmpdir: Option<TmpDir>,
+    compile_result: Option<CompileResult>,
+    run_rules: Option<Arc<Rules>>,
+}
+
+impl<T> CompiledTestRunner<'_, T> {
+    pub fn compile_result(&self) -> Option<&CompileResult> {
+        self.compile_result.as_ref()
+    }
+
+    pub fn success(&self) -> bool {
+        if let Some(ref c) = self.compile_result {
+            c.state() == CompileResultState::Pass
+        } else {
+            true
+        }
+    }
+}
+
+impl<T> CompiledTestRunner<'_, T>
+where
+    T: Send + Sync + Clone + 'static,
+{
     async fn run_test(
         index: usize,
         cwd: &Path,
@@ -399,15 +454,15 @@ where
         })
     }
 
-    fn spawn_tests(
-        &mut self,
-        cwd: &Path,
-        run_rules: Option<Arc<Rules>>,
-    ) -> JoinSet<Result<TestResult<T>, SpawnTestError>> {
+    fn spawn_tests(&mut self) -> JoinSet<Result<TestResult<T>, SpawnTestError>> {
         let mut joinset = JoinSet::new();
 
-        for (i, case) in self.context.test_cases.iter().enumerate() {
-            if self.test_filter.is_some_and(|filter| !filter(case)) {
+        for (i, case) in self.test_runner.context.test_cases.iter().enumerate() {
+            if self
+                .test_runner
+                .test_filter
+                .is_some_and(|filter| !filter(case))
+            {
                 trace!(?case.input, ?case.output, "Skipping test");
                 continue;
             }
@@ -420,9 +475,9 @@ where
                 &case.input
             };
             let span = debug_span!("run_test", index = i, ?input);
-            let context = Arc::clone(&self.context);
-            let run_rules = run_rules.as_ref().map(Arc::clone);
-            let path = cwd.to_path_buf();
+            let context = Arc::clone(&self.test_runner.context);
+            let run_rules = self.run_rules.as_ref().map(Arc::clone);
+            let path = self.cwd.to_path_buf();
             joinset.spawn(
                 async move { Self::run_test(i, &path, case, run_rules, context).await }
                     .instrument(span),
@@ -432,72 +487,16 @@ where
         joinset
     }
 
-    fn create_rules(&self, cwd: &Path) -> (Option<Arc<Rules>>, Option<Arc<Rules>>) {
-        let modify_rules = |rules: Rules| -> Rules { rules.clone().add_read_write(cwd) };
-        match &self.context.rules {
-            CommandConfig::None => (None, None),
-            CommandConfig::Compile(ref r) => (Some(Arc::new(modify_rules(r.clone()))), None),
-            CommandConfig::Run(ref r) => (None, Some(Arc::new(modify_rules(r.clone())))),
-            CommandConfig::Equal(ref r) => {
-                // Done this way to only create once instance of the rules and just Arc::clone it
-                let r = modify_rules(r.clone());
-                let r = Arc::new(r);
-                (Some(Arc::clone(&r)), Some(r))
-            }
-            CommandConfig::Different { compile, run } => (
-                Some(Arc::new(modify_rules(compile.clone()))),
-                Some(Arc::new(modify_rules(run.clone()))),
-            ),
-        }
-    }
-
     #[instrument(skip(self))]
-    pub async fn compile_and_spawn_runner(
-        mut self,
-    ) -> Result<(Option<CompileResult>, TestHandle<T>), CompileAndSpawnError> {
-        let mut tmpdir = None;
-        let cwd = if let Some(cwd) = self.cwd.take() {
-            trace!(?cwd, "Using specified cwd");
-            cwd
-        } else {
-            trace!("Creating temp dir");
-            tmpdir = Some(
-                TmpDir::new("erudite")
-                    .await
-                    .map_err(CompileError::MktempFail)?,
-            );
-            tmpdir
-                .as_ref()
-                .expect("we literally just assigned it")
-                .as_ref()
-        };
-
-        debug!(path = ?cwd, "setting up directory");
-
-        let (compile_rules, run_rules) = self.create_rules(cwd);
-
-        trace!("creating files");
-        let start = Instant::now();
-        self.create_files(cwd).await?;
-        let elapsed = start.elapsed();
-        debug!(in = ?elapsed, "created files");
-
-        debug!(?cwd, "starting compilation");
-        let start = Instant::now();
-        let compile_output = self.compile(cwd, compile_rules).await?;
-        let elapsed = start.elapsed();
-        debug!(in = ?elapsed, "finished compilation");
-
+    pub fn run(mut self) -> TestHandle<T> {
         trace!("spawning tests");
-        let tests = self.spawn_tests(cwd, run_rules);
+        let tests = self.spawn_tests();
 
-        Ok((
-            compile_output,
-            TestHandle {
-                joinset: tests,
-                _tmpdir: tmpdir,
-            },
-        ))
+        TestHandle {
+            joinset: tests,
+            compile_result: self.compile_result,
+            _tmpdir: self.tmpdir,
+        }
     }
 }
 
@@ -562,11 +561,12 @@ impl<T> TestResult<T> {
 
 pub struct TestHandle<T> {
     joinset: JoinSet<Result<TestResult<T>, SpawnTestError>>,
+    compile_result: Option<CompileResult>,
     /// Needed to remove the temp dir when we're done
     _tmpdir: Option<TmpDir>,
 }
 
-impl<T: 'static> TestHandle<T> {
+impl<T> TestHandle<T> {
     pub fn len(&self) -> usize {
         self.joinset.len()
     }
@@ -575,6 +575,12 @@ impl<T: 'static> TestHandle<T> {
         self.joinset.is_empty()
     }
 
+    pub fn compile_result(&self) -> Option<&CompileResult> {
+        self.compile_result.as_ref()
+    }
+}
+
+impl<T: 'static> TestHandle<T> {
     pub async fn wait_next(&mut self) -> Result<Option<TestResult<T>>, SpawnTestError> {
         match self.joinset.join_next().await {
             Some(Err(e)) => Err(SpawnTestError::JoinError(e)),

@@ -23,21 +23,24 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
         .rules(rules)
         .max_memory(MemorySize::from_mb(800))
         .timeout(Duration::from_secs(5))
+        .trim_output(true)
         .build();
 
     dbg!(&context);
     let context = Arc::new(context);
 
-    let (compile, mut tests) = context
+    let compiled = context
         .test_runner()
         .file(
             TestFileContent::string(include_str!("./Solution.java")),
             Path::new("Solution.java"),
         )
         .collect_output(true)
-        .compile_and_spawn_runner()
+        .compile()
         .await?;
 
+    assert!(compiled.success());
+    let compile = compiled.compile_result();
     assert!(compile.is_some());
     let compile = compile.unwrap();
     eprintln!("COMPILE OUTPUT:");
@@ -51,6 +54,8 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
         eprintln!("    {x}");
     }
     assert_eq!(compile.state(), CompileResultState::Pass);
+
+    let mut tests = compiled.run();
 
     let results = tests.wait_all().await?;
 
@@ -85,16 +90,18 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
     dbg!(&context);
     let context = Arc::new(context);
 
-    let (compile, _tests) = context
+    let compiled = context
         .test_runner()
         .file(
             TestFileContent::string(include_str!("./Solution.java")),
             Path::new("Solution.java"),
         )
         .collect_output(true)
-        .compile_and_spawn_runner()
+        .compile()
         .await?;
 
+    let compile = compiled.compile_result();
+    assert!(!compiled.success());
     assert!(compile.is_some());
     let compile = compile.unwrap();
     eprintln!("COMPILE OUTPUT:");
