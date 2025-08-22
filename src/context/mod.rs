@@ -13,7 +13,7 @@ pub use builder::TestContextBuilder;
 use crate::{cases::TestCase, runner::TestRunner};
 
 /// Configuration for how a file should be setup for test cases to be run
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileConfig {
     /// This path is relative to the temporary directory created while running tests
     src: FileContent,
@@ -269,8 +269,16 @@ mod test {
     }
 
     #[test]
+    fn file_config_from_tuple2() {
+        let cfg: FileConfig = (Path::new("foo/bar"), "foo/bar").into();
+        assert_eq!(cfg, FileConfig::new(Path::new("foo/bar"), "foo/bar"));
+    }
+
+    #[test]
     fn file_content_path() {
         let content = FileContent::path("foo/bar");
+        assert_eq!(content, FileContent::Path(PathBuf::from("foo/bar")));
+        let content: FileContent = Path::new("foo/bar").into();
         assert_eq!(content, FileContent::Path(PathBuf::from("foo/bar")));
     }
 
@@ -293,35 +301,71 @@ mod test {
     #[test]
     fn commandconfig_run_only() {
         let mut cfg = CommandConfig::default();
-        cfg.with_run(42);
 
+        cfg.with_run(42);
         assert_eq!(cfg.run(), Some(&42));
         assert_eq!(cfg.compile(), None);
+
+        cfg.with_run(9001);
+        assert_eq!(cfg.run(), Some(&9001));
+        assert_eq!(cfg.compile(), None);
+
+        cfg.with_both(1);
+        assert_eq!(cfg.run(), Some(&1));
+        assert_eq!(cfg.compile(), Some(&1));
+
+        cfg.with_run(42);
+        cfg.with_compile(2);
+        assert_eq!(cfg.run(), Some(&42));
+        assert_eq!(cfg.compile(), Some(&2));
     }
 
     #[test]
     fn commandconfig_compile_only() {
         let mut cfg = CommandConfig::default();
-        cfg.with_compile(42);
 
+        cfg.with_compile(42);
         assert_eq!(cfg.run(), None);
+        assert_eq!(cfg.compile(), Some(&42));
+
+        cfg.with_compile(9001);
+        assert_eq!(cfg.run(), None);
+        assert_eq!(cfg.compile(), Some(&9001));
+
+        cfg.with_both(1);
+        assert_eq!(cfg.run(), Some(&1));
+        assert_eq!(cfg.compile(), Some(&1));
+
+        cfg.with_compile(42);
+        cfg.with_run(2);
+        assert_eq!(cfg.run(), Some(&2));
         assert_eq!(cfg.compile(), Some(&42));
     }
 
     #[test]
     fn commandconfig_equal() {
         let mut cfg = CommandConfig::default();
-        let val = AtomicI32::new(0);
-        cfg.with_both(val);
 
+        cfg.with_both(AtomicI32::new(0));
         assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(0));
         assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(0));
 
         // Change the atomic to ensure that they are both pointing at the same value
         cfg.run().unwrap().store(42, Ordering::SeqCst);
-
         assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(42));
         assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(42));
+
+        cfg.with_run(AtomicI32::new(1));
+        assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(1));
+        assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(42));
+
+        cfg.with_both(AtomicI32::new(69));
+        assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(69));
+        assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(69));
+
+        cfg.with_compile(AtomicI32::new(8));
+        assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(69));
+        assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(8));
     }
 
     #[test]
@@ -336,8 +380,11 @@ mod test {
 
         // Change the atomic to ensure that they are both pointing at the same value
         cfg.run().unwrap().store(42, Ordering::SeqCst);
-
         assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(42));
         assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(2));
+
+        cfg.with_both(AtomicI32::new(1337));
+        assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(1337));
+        assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(1337));
     }
 }
