@@ -17,7 +17,7 @@ use tokio::{
 use tracing::{debug, debug_span, instrument, trace, Instrument};
 
 use crate::{
-    cases::{OutputValidator, TestCase},
+    cases::TestCase,
     context::{CommandConfig, TestContext},
     error::{CompileError, CreateFilesError, SpawnTestError},
     Bytes, Output,
@@ -547,17 +547,18 @@ where
 
         let time_taken = start.elapsed();
 
-        let validator = OutputValidator {
-            trim_output: context.trim_output,
-            expected_output: case.output,
-        };
-
         let state = if timed_out {
             TestResultState::TimedOut
         } else if output.status != 0 {
             TestResultState::RuntimeFail
         } else if let Some(stdout) = output.stdout.as_str() {
-            if validator.is_valid(stdout) {
+            let stdout = if context.trim_output {
+                stdout.trim()
+            } else {
+                stdout
+            };
+
+            if case.output().is_valid(stdout) {
                 TestResultState::Pass
             } else {
                 TestResultState::IncorrectOutput

@@ -107,6 +107,18 @@ mod test {
     use super::*;
 
     #[test]
+    fn bytes_from_string() {
+        let string = "hello".to_string();
+        let bytes = Bytes::from(string.clone());
+        assert!(matches!(bytes, Bytes::String(_)));
+        assert_eq!(bytes.bytes(), string.as_bytes());
+        assert_eq!(bytes.as_str(), Some(&*string));
+        assert_eq!(bytes.to_str_lossy(), string);
+        assert_eq!(bytes.len(), string.len());
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
     fn bytes_from_vec() {
         const BYTES: &[u8] = &[0xc3, 0x00, b'h', b'i'];
         let bytes = Bytes::from(BYTES.to_vec()); // not a valid string
