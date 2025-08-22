@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tokio::task::JoinError;
 
+use crate::runner::CompileResult;
+
 #[derive(Debug, Error)]
 pub enum CompileError {
     #[error("Failed to spawn compile command: {:?}", .0)]
@@ -15,6 +17,8 @@ pub enum CompileError {
     CreateFilesError(#[from] CreateFilesError),
     #[error("Failed to create compile/run directory: {:?}", .0)]
     MktempFail(#[source] std::io::Error),
+    #[error("Failed to compile solution: {:?}", .0)]
+    CompileFail(CompileResult),
 }
 
 #[derive(Debug, Error)]
@@ -37,12 +41,4 @@ pub enum SpawnTestError {
     WriteStdinFail(#[source] std::io::Error),
     #[error("Failed to wait on run command: {:?}", .0)]
     WaitFail(#[source] std::io::Error),
-}
-
-#[derive(Debug, Error)]
-pub enum CompileAndSpawnError {
-    #[error("failed to compile compile: {:?}", .0)]
-    CompileError(#[from] CompileError),
-    #[error("failed to spawn tests: {:?}", .0)]
-    SpawnTestError(#[from] SpawnTestError),
 }

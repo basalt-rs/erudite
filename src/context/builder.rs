@@ -1,4 +1,6 @@
-use super::{CommandConfig, ExpectedOutput, FileConfig, FileContent, TestCase, TestContext};
+use crate::cases::{ExpectedOutput, TestCase};
+
+use super::{CommandConfig, FileConfig, FileContent, TestContext};
 use std::{marker::PhantomData, path::PathBuf, time::Duration};
 
 use leucite::{MemorySize, Rules};
@@ -158,9 +160,9 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// _no_ compilation step will be performed, even if the other compile settings are used.
     ///
     /// The command must have at least one item to be valid.  If it does not, the error will be
-    /// propogated when calling [`TestRunner::compile_and_spawn_runner`]
+    /// propogated when calling [`TestRunner::compile`]
     ///
-    /// [`TestRunner::compile_and_spawn_runner`]: crate::runner::TestRunner::compile_and_spawn_runner
+    /// [`TestRunner::compile`]: crate::runner::TestRunner::compile
     ///
     /// ```
     /// # use erudite::context::{TestContext, FileContent};
@@ -230,9 +232,9 @@ impl<T, Tests> TestContextBuilder<T, Tests, MissingRunCmd> {
     /// Set the command to run the tests
     ///
     /// The command must have at least one item to be valid.  If it does not, the error will be
-    /// propogated when calling [`TestRunner::compile_and_spawn_runner`]
+    /// propogated when calling [`TestHandle::wait_next`]
     ///
-    /// [`TestRunner::compile_and_spawn_runner`]: crate::runner::TestRunner::compile_and_spawn_runner
+    /// [`TestHandle::wait_next`]: crate::runner::TestHandle::wait_next
     ///
     /// ```
     /// # use erudite::context::TestContext;

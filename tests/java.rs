@@ -2,6 +2,7 @@ use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
 use erudite::{
     context::TestContext,
+    error::CompileError,
     runner::{CompileResultState, TestFileContent, TestResultState},
 };
 use leucite::{MemorySize, Rules};
@@ -39,7 +40,6 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
         .compile()
         .await?;
 
-    assert!(compiled.success());
     let compile = compiled.compile_result();
     assert!(compile.is_some());
     let compile = compile.unwrap();
@@ -53,7 +53,7 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
     for x in compile.stderr().to_str_lossy().lines() {
         eprintln!("    {x}");
     }
-    assert_eq!(compile.state(), CompileResultState::Pass);
+    assert_eq!(compile.state(), CompileResultState::Success);
 
     let mut tests = compiled.run();
 
@@ -98,12 +98,12 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
         )
         .collect_output(true)
         .compile()
-        .await?;
+        .await;
 
-    let compile = compiled.compile_result();
-    assert!(!compiled.success());
-    assert!(compile.is_some());
-    let compile = compile.unwrap();
+    let Err(CompileError::CompileFail(compile)) = compiled else {
+        panic!("compiled was not a compiler error")
+    };
+
     eprintln!("COMPILE OUTPUT:");
     eprintln!("Status: {}", compile.exit_status());
     eprintln!("STDOUT:");

@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 
+// Re-exports so the consumer doesn't need to depend on leucite directly
+pub use leucite::{MemorySize, Rules};
+
+pub mod cases;
 pub mod context;
 pub mod error;
 pub mod runner;
-
-// Re-exports so the consumer doesn't need to depend on leucite directly
-pub use leucite::{MemorySize, Rules};
 
 /// Represents some data that may either be a string or a series of bytes.  The recommended method
 /// for constructing this type is to use [`From::from`] which will automatically choose the
@@ -53,6 +54,12 @@ impl Bytes {
     }
 }
 
+impl From<String> for Bytes {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
 impl From<Vec<u8>> for Bytes {
     fn from(value: Vec<u8>) -> Self {
         String::from_utf8(value)
@@ -63,13 +70,13 @@ impl From<Vec<u8>> for Bytes {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct SimpleOutput {
+pub struct Output {
     stdout: Bytes,
     stderr: Bytes,
     status: i32,
 }
 
-impl SimpleOutput {
+impl Output {
     pub(crate) fn new(stdout: impl Into<Bytes>, stderr: impl Into<Bytes>, status: i32) -> Self {
         Self {
             stdout: stdout.into(),
@@ -115,7 +122,7 @@ mod test {
     fn bytes_from_string_vec() {
         const STRING: &str = "hello";
         const BYTES: &[u8] = STRING.as_bytes();
-        let bytes = Bytes::from(BYTES.to_vec()); // not a valid string
+        let bytes = Bytes::from(BYTES.to_vec());
         assert!(matches!(bytes, Bytes::String(_)));
         assert_eq!(bytes.bytes(), BYTES);
         assert_eq!(bytes.as_str(), Some(STRING));
@@ -126,7 +133,7 @@ mod test {
 
     #[test]
     fn simple_output_success() {
-        let out = SimpleOutput::new(
+        let out = Output::new(
             "hello".to_string().into_bytes(),
             "world".to_string().into_bytes(),
             0,
@@ -140,7 +147,7 @@ mod test {
 
     #[test]
     fn simple_output_fail() {
-        let out = SimpleOutput::new(
+        let out = Output::new(
             "hello".to_string().into_bytes(),
             "world".to_string().into_bytes(),
             1,
