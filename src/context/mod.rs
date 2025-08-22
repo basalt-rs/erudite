@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use derive_more::From;
 use leucite::{MemorySize, Rules};
 
 mod builder;
@@ -12,17 +13,23 @@ pub use builder::TestContextBuilder;
 use crate::{cases::TestCase, runner::TestRunner};
 
 /// Configuration for how a file should be setup for test cases to be run
-// TODO: should this be pub?
 #[derive(Clone, Debug)]
-pub(crate) struct FileConfig {
+pub struct FileConfig {
     /// This path is relative to the temporary directory created while running tests
-    dest: PathBuf,
     src: FileContent,
+    dest: PathBuf,
 }
 
 impl FileConfig {
-    pub(crate) async fn write_file(&self, base: &Path) -> std::io::Result<u64> {
-        let target = base.join(&self.dest);
+    pub fn new(src: impl Into<FileContent>, dest: impl Into<PathBuf>) -> Self {
+        FileConfig {
+            src: src.into(),
+            dest: dest.into(),
+        }
+    }
+
+    pub(crate) async fn write_file(&self, base: impl AsRef<Path>) -> std::io::Result<u64> {
+        let target = base.as_ref().join(&self.dest);
         match self.src {
             FileContent::Path(ref path) => tokio::fs::copy(path, target).await,
             FileContent::Bytes(ref contents) => tokio::fs::write(target, contents)
@@ -31,8 +38,18 @@ impl FileConfig {
         }
     }
 
-    pub(crate) fn dest(&self) -> &Path {
+    pub fn dest(&self) -> &Path {
         &self.dest
+    }
+}
+
+impl<S, D> From<(S, D)> for FileConfig
+where
+    S: Into<FileContent>,
+    D: Into<PathBuf>,
+{
+    fn from((source, destination): (S, D)) -> Self {
+        Self::new(source, destination)
     }
 }
 
@@ -44,7 +61,7 @@ impl FileConfig {
 ///
 /// [`FileContent::Bytes`] contains a vec of bytes that will be written to the file when the tests
 /// are compiled.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, From, PartialEq, Eq)]
 pub enum FileContent {
     /// Copies a file directly from this path
     ///
@@ -53,6 +70,12 @@ pub enum FileContent {
     Path(PathBuf),
     /// Creates a new file with this content
     Bytes(Vec<u8>),
+}
+
+impl From<&Path> for FileContent {
+    fn from(value: &Path) -> Self {
+        Self::path(value)
+    }
 }
 
 impl FileContent {
@@ -87,6 +110,7 @@ impl FileContent {
     }
 }
 
+// TODO: rename (and update test names)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CommandConfig<T> {
     None,
@@ -192,5 +216,128 @@ impl<T> TestContext<T> {
     /// Create a [`TestRunner`] from this context.  See [`TestRunner`] for more details.
     pub fn test_runner<'a>(self: Arc<Self>) -> TestRunner<'a, T> {
         TestRunner::new(self)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicI32, Ordering},
+    };
+
+    use tmpdir::TmpDir;
+
+    use crate::context::{CommandConfig, FileConfig, FileContent};
+
+    #[tokio::test]
+    async fn file_config_path() {
+        let tmpdir = TmpDir::new("erudite-test").await.unwrap();
+        let input = tmpdir.as_ref().join("in.rs");
+        tokio::fs::write(&input, "some content")
+            .await
+            .expect("failed setting up test");
+
+        let config = FileConfig::new(input, "out.rs");
+        assert_eq!(config.dest(), Path::new("out.rs"));
+        config
+            .write_file(&tmpdir)
+            .await
+            .expect("failed while copying file");
+
+        let read = tokio::fs::read_to_string(tmpdir.as_ref().join("out.rs"))
+            .await
+            .expect("failed while reading file");
+        assert_eq!(read, "some content");
+    }
+
+    #[tokio::test]
+    async fn file_config_bytes() {
+        let tmpdir = TmpDir::new("erudite-test").await.unwrap();
+
+        let config = FileConfig::new(String::from("some content").into_bytes(), "out.rs");
+        assert_eq!(config.dest(), Path::new("out.rs"));
+        config
+            .write_file(&tmpdir)
+            .await
+            .expect("failed while copying file");
+
+        let read = tokio::fs::read_to_string(tmpdir.as_ref().join("out.rs"))
+            .await
+            .expect("failed while reading file");
+        assert_eq!(read, "some content");
+    }
+
+    #[test]
+    fn file_content_path() {
+        let content = FileContent::path("foo/bar");
+        assert_eq!(content, FileContent::Path(PathBuf::from("foo/bar")));
+    }
+
+    #[test]
+    fn file_content_string() {
+        let content = FileContent::string("hello world");
+        assert_eq!(
+            content,
+            FileContent::Bytes("hello world".as_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn file_content_bytes() {
+        let bytes = vec![0xca, 0xfe, 0xba, 0xbe];
+        let content = FileContent::bytes(bytes.clone());
+        assert_eq!(content, FileContent::Bytes(bytes));
+    }
+
+    #[test]
+    fn commandconfig_run_only() {
+        let mut cfg = CommandConfig::default();
+        cfg.with_run(42);
+
+        assert_eq!(cfg.run(), Some(&42));
+        assert_eq!(cfg.compile(), None);
+    }
+
+    #[test]
+    fn commandconfig_compile_only() {
+        let mut cfg = CommandConfig::default();
+        cfg.with_compile(42);
+
+        assert_eq!(cfg.run(), None);
+        assert_eq!(cfg.compile(), Some(&42));
+    }
+
+    #[test]
+    fn commandconfig_equal() {
+        let mut cfg = CommandConfig::default();
+        let val = AtomicI32::new(0);
+        cfg.with_both(val);
+
+        assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(0));
+        assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(0));
+
+        // Change the atomic to ensure that they are both pointing at the same value
+        cfg.run().unwrap().store(42, Ordering::SeqCst);
+
+        assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(42));
+        assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(42));
+    }
+
+    #[test]
+    fn commandconfig_different() {
+        let mut cfg = CommandConfig::default();
+        let rval = AtomicI32::new(4);
+        let cval = AtomicI32::new(2);
+        cfg.with_run(rval).with_compile(cval);
+
+        assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(4));
+        assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(2));
+
+        // Change the atomic to ensure that they are both pointing at the same value
+        cfg.run().unwrap().store(42, Ordering::SeqCst);
+
+        assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(42));
+        assert_eq!(cfg.compile().map(|x| x.load(Ordering::SeqCst)), Some(2));
     }
 }
