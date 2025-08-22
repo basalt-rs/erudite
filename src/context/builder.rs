@@ -384,4 +384,5 @@ impl<T> TestContextBuilder<T, SetTests, SetRunCmd> {
 /// ```
 #[allow(unused)]
 #[doc(hidden)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn type_state_builder_test() {}

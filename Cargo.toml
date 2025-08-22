@@ -7,6 +7,9 @@ rust-version = "1.80"
 [features]
 regex = ["dep:regex"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
+
 [dependencies]
 leucite = { version = "1.0.0", features = ["tokio"] }
 tmpdir = "1.0.0"
