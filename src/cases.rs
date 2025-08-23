@@ -106,6 +106,40 @@ mod test {
 
     use crate::cases::{ExpectedOutput, TestCase};
 
+    macro_rules! re {
+        ($re: literal) => {
+            Regex::new($re).unwrap()
+        };
+    }
+
+    #[test]
+    fn expected_output_equality() {
+        assert_eq!(
+            ExpectedOutput::from("foobar"),
+            ExpectedOutput::from("foobar"),
+        );
+        assert_ne!(
+            ExpectedOutput::from("foobar"),
+            ExpectedOutput::from("bazqux"),
+        );
+        assert_ne!(
+            ExpectedOutput::from("foobar"),
+            ExpectedOutput::from(re!(".")),
+        );
+        assert_ne!(
+            ExpectedOutput::from(re!(".")),
+            ExpectedOutput::from("foobar"),
+        );
+        assert_eq!(
+            ExpectedOutput::from(re!(".")),
+            ExpectedOutput::from(re!(".")),
+        );
+        assert_ne!(
+            ExpectedOutput::from(re!(".")),
+            ExpectedOutput::from(re!(".+")),
+        );
+    }
+
     #[test]
     fn expect_output_is_valid_string() {
         let validator = ExpectedOutput::from("hi");
@@ -122,7 +156,7 @@ mod test {
 
     #[test]
     fn expect_output_is_valid_regex() {
-        let validator = ExpectedOutput::from(Regex::new(r"([01]\d|2[0-3])(:[0-5]\d){2}").unwrap());
+        let validator = ExpectedOutput::from(re!(r"([01]\d|2[0-3])(:[0-5]\d){2}"));
         assert!(validator.is_valid("04:22:57"));
         assert!(validator.is_valid("14:22:57"));
         assert!(!validator.is_valid("24:22:57"));

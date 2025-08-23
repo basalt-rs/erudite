@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 use std::borrow::Cow;
 
 // Re-exports so the consumer doesn't need to depend on leucite directly
