@@ -355,7 +355,6 @@ mod test {
     use std::{path::Path, time::Duration};
 
     use leucite::{MemorySize, Rules};
-    use regex::Regex;
 
     use crate::{cases::ExpectedOutput, context::TestContext};
 

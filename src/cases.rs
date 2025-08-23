@@ -17,10 +17,13 @@ impl PartialEq for ExpectedOutput {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (ExpectedOutput::String(s), ExpectedOutput::String(o)) => s == o,
+            #[cfg(feature = "regex")]
             (ExpectedOutput::String(_), ExpectedOutput::Regex(_)) => false,
+            #[cfg(feature = "regex")]
             (ExpectedOutput::Regex(_), ExpectedOutput::String(_)) => false,
             // NOTE: this is not completely correct, as two different strings can match the same
             // pattern, i.e., `..*` and `.+`, but it's good enough
+            #[cfg(feature = "regex")]
             (ExpectedOutput::Regex(s), ExpectedOutput::Regex(o)) => s.as_str() == o.as_str(),
         }
     }
