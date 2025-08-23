@@ -21,10 +21,17 @@ pub struct FileConfig {
 }
 
 impl FileConfig {
-    pub fn new(src: impl Into<FileContent>, dest: impl Into<PathBuf>) -> Self {
+    pub fn new(src: impl Into<FileContent>, dest: impl AsRef<Path>) -> Self {
+        let dest = dest.as_ref();
+        let dest = if dest.is_absolute() {
+            dest.strip_prefix("/").unwrap().to_path_buf()
+        } else {
+            dest.to_path_buf()
+        };
+
         FileConfig {
             src: src.into(),
-            dest: dest.into(),
+            dest,
         }
     }
 
@@ -46,7 +53,7 @@ impl FileConfig {
 impl<S, D> From<(S, D)> for FileConfig
 where
     S: Into<FileContent>,
-    D: Into<PathBuf>,
+    D: AsRef<Path>,
 {
     fn from((source, destination): (S, D)) -> Self {
         Self::new(source, destination)

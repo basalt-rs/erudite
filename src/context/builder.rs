@@ -1,7 +1,7 @@
 use crate::cases::{ExpectedOutput, TestCase};
 
 use super::{CommandConfig, FileConfig, FileContent, TestContext};
-use std::{marker::PhantomData, path::PathBuf, time::Duration};
+use std::{marker::PhantomData, path::Path, time::Duration};
 
 use leucite::{MemorySize, Rules};
 
@@ -181,8 +181,8 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
         self
     }
 
-    /// Add a file to be inserted into the runtime environment of the test.  This gets added
-    /// before compilation, so it works well for libraries or input/output manipulation.
+    /// Add a file to be inserted into the runtime environment of the test.  This is added before
+    /// compilation, so it works well for libraries or input/output manipulation.
     ///
     /// If `source` is a path, the file will only be copied when a test is compiled, meaning
     /// that if the file changes or is removed, then the output may differ between two
@@ -191,8 +191,9 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// If the intended behaviour is to read the file _now_, consider reading the file directly
     /// and placing it into [`FileContent::bytes`].
     ///
-    /// `destination` is path relative to the directory used for the compilation/runtime
-    /// environment.  If destination is not a relative path, _this function will panic_.
+    /// `destination` is path relative to the directory used for the test environment.  If
+    /// destination an absolute path, then it will be made relative to the test environment, i.e.,
+    /// `/foo/bar` -> `<test-env>/foo/bar`.
     ///
     /// ```
     /// # use erudite::context::{TestContext, FileContent};
@@ -203,20 +204,38 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     ///     .file(FileContent::path("/foo/bar"), "some_other_file")
     ///     .build();
     /// ```
-    pub fn file(mut self, source: impl Into<FileContent>, destination: impl Into<PathBuf>) -> Self {
-        let destination = destination.into();
+    pub fn file(mut self, source: impl Into<FileContent>, destination: impl AsRef<Path>) -> Self {
+        self.files.push(FileConfig::new(source, destination));
+        self
+    }
 
-        assert!(
-            destination.is_relative(),
-            "Destination is not a relative path (destination = {})",
-            destination.display(),
-        );
-
-        self.files.push(FileConfig {
-            dest: destination,
-            src: source.into(),
-        });
-
+    /// Add multiple files to be inserted into the runtime environment of the test.  These files
+    /// are added before compilation, so it works well for libraries or input/output manipulation.
+    ///
+    /// If `source` is a path, the file will only be copied when a test is compiled, meaning
+    /// that if the file changes or is removed, then the output may differ between two
+    /// instances of the test runner from a single context.
+    ///
+    /// If the intended behaviour is to read the file _now_, consider reading the file directly
+    /// and placing it into [`FileContent::bytes`].
+    ///
+    /// `destination` is path relative to the directory used for the test environment.  If
+    /// destination an absolute path, then it will be made relative to the test environment, i.e.,
+    /// `/foo/bar` -> `<test-env>/foo/bar`.
+    ///
+    /// ```
+    /// # use erudite::context::{TestContext, FileContent, FileConfig};
+    /// let ctx = TestContext::builder()
+    ///     .run_command(["node", "solution.js"])
+    ///     .test("hello world", "dlrow olleh", true)
+    ///     .files([
+    ///         FileConfig::new(FileContent::string("// some javascript code"), "solution.js"),
+    ///         FileConfig::new(FileContent::path("/foo/bar"), "some_other_file")
+    ///     ])
+    ///     .build();
+    /// ```
+    pub fn files(mut self, files: impl IntoIterator<Item = impl Into<FileConfig>>) -> Self {
+        self.files.extend(files.into_iter().map(Into::into));
         self
     }
 
@@ -300,14 +319,13 @@ where
     ///     ])
     ///     .build();
     /// ```
-    // NOTE: this function in the type-state builder is not perfect, as they could pass an iterator
-    // with 0 elements, but it's a relatively rare case.
+    // NOTE: this function in the type-state builder is not perfect, as the caller could pass an
+    // iterator with 0 elements, but it's a relatively rare case.
     pub fn tests(
         mut self,
         tests: impl IntoIterator<Item = impl Into<TestCase<T>>>,
     ) -> TestContextBuilder<T, SetTests, RunCmd> {
         self.test_cases.extend(tests.into_iter().map(Into::into));
-        assert!(!self.test_cases.is_empty()); // This will catch an empty iterator, but it's inelegant.
         self.transform()
     }
 }
@@ -316,8 +334,8 @@ impl<T> TestContextBuilder<T, SetTests, SetRunCmd> {
     /// Finish building this test context
     pub fn build(self) -> TestContext<T> {
         // Just some sanity checks
-        debug_assert!(self.command.run().is_some());
-        debug_assert!(!self.test_cases.is_empty());
+        assert!(self.command.run().is_some());
+        assert!(!self.test_cases.is_empty());
         TestContext {
             trim_output: self.trim_output,
             files: self.files,
@@ -332,57 +350,199 @@ impl<T> TestContextBuilder<T, SetTests, SetRunCmd> {
     }
 }
 
-/// A few `compile_fail` tests to confirm the efficacy of the type-state builder
-///
-/// No run method or tests
-/// ```compile_fail
-/// use erudite::context::TestContext;
-/// let context = TestContext::builder()
-///     .build();
-/// ```
-///
-/// One test, but no run method
-/// ```compile_fail
-/// use erudite::context::TestContext;
-/// let context = TestContext::builder()
-///     .test("foo", "bar", ())
-///     .build();
-/// ```
-///
-/// Many tests, but no run method
-/// ```compile_fail
-/// use erudite::context::TestContext;
-/// let context = TestContext::builder()
-///     .test("foo", "bar", ())
-///     .test("foo", "bar", ())
-///     .test("foo", "bar", ())
-///     .build();
-/// ```
-///
-/// One test using `.tests`, but no run method
-/// ```compile_fail
-/// use erudite::context::TestContext;
-/// let context = TestContext::builder()
-///     .tests([("foo", "bar", ())])
-///     .build();
-/// ```
-///
-/// Many tests using `.tests`, but no run method
-/// ```compile_fail
-/// use erudite::context::TestContext;
-/// let context = TestContext::builder()
-///     .tests([("foo", "bar", ()), ("baz", "qux", ())])
-///     .build();
-/// ```
-///
-/// Run method, but no tests
-/// ```compile_fail
-/// use erudite::context::TestContext;
-/// let context = TestContext::builder()
-///     .run_command(["rustc", "-o", "solution", "solution.rs"])
-///     .build();
-/// ```
-#[allow(unused)]
-#[doc(hidden)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn type_state_builder_test() {}
+#[cfg(test)]
+mod test {
+    use std::{path::Path, time::Duration};
+
+    use leucite::{MemorySize, Rules};
+    use regex::Regex;
+
+    use crate::{cases::ExpectedOutput, context::TestContext};
+
+    #[test]
+    fn minimal_builder() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test("hello", "world", ())
+            .build();
+
+        assert_eq!(
+            ctx.command.run().map(|x| &**x),
+            Some(&["echo".to_string(), "foo".to_string()][..])
+        );
+
+        assert_eq!(ctx.test_cases[0].input(), "hello");
+        assert!(matches!(ctx.test_cases[0].output(), ExpectedOutput::String(s) if s == "world"));
+    }
+
+    #[test]
+    fn absolute_file_destination() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test("hello", "world", ())
+            .file(Path::new("./foo/bar.txt"), "/bar.txt")
+            .build();
+
+        assert_eq!(ctx.files[0].dest(), Path::new("bar.txt"));
+    }
+
+    #[test]
+    fn absolute_files_destination() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test("hello", "world", ())
+            .files([
+                (Path::new("./foo/bar.txt"), "/bar.txt"),
+                (Path::new("./foo/bar.txt"), "/foo/bar.rs"),
+            ])
+            .build();
+
+        assert_eq!(ctx.files[0].dest(), Path::new("bar.txt"));
+        assert_eq!(ctx.files[1].dest(), Path::new("foo/bar.rs"));
+    }
+
+    macro_rules! test_field {
+        ($field: ident, $run_field: ident = $a: expr, $compile_field: ident = $b: expr) => {
+            concat_idents::concat_idents!(name = $field, _field {
+                #[test]
+                fn name() {
+                    let a = $a;
+                    let ctx = TestContext::builder()
+                        .run_command(["echo", "foo"])
+                        .test("hello", "world", ())
+                        .$field(a.clone())
+                        .build();
+
+                    assert_eq!(ctx.$field.run(), Some(&a));
+                    assert_eq!(ctx.$field.compile(), Some(&a));
+
+                    let b = $b;
+                    let ctx = TestContext::builder()
+                        .run_command(["echo", "foo"])
+                        .test("hello", "world", ())
+                        .$run_field(a.clone())
+                        .$compile_field(b.clone())
+                        .build();
+
+                    assert_eq!(ctx.$field.run(), Some(&a));
+                    assert_eq!(ctx.$field.compile(), Some(&b));
+                }
+            });
+        };
+    }
+
+    test_field!(
+        rules,
+        run_rules = Rules::new(),
+        compile_rules = Rules::new().add_read_only("/foo")
+    );
+    test_field!(
+        max_memory,
+        run_max_memory = MemorySize::from_mib(69),
+        compile_max_memory = MemorySize::from_mib(420)
+    );
+    test_field!(
+        max_file_size,
+        run_max_file_size = MemorySize::from_mib(69),
+        compile_max_file_size = MemorySize::from_mib(420)
+    );
+    test_field!(max_threads, run_max_threads = 69, compile_max_threads = 420);
+    test_field!(
+        timeout,
+        run_timeout = Duration::from_millis(69),
+        compile_timeout = Duration::from_millis(420)
+    );
+
+    #[test]
+    fn builder_test_tests_equivalent() {
+        let singular = TestContext::builder()
+            .run_command([""])
+            .test("foo", "bar", 5)
+            .test("bar", "baz", 6)
+            .build();
+        let plural = TestContext::builder()
+            .run_command([""])
+            .tests([("foo", "bar", 5), ("bar", "baz", 6)])
+            .build();
+
+        assert_eq!(singular.test_cases, plural.test_cases);
+    }
+
+    #[test]
+    fn builder_file_files_equivalent() {
+        let singular = TestContext::builder()
+            .run_command([""])
+            .test("", "", 0)
+            .file("foo".as_bytes().to_vec(), "bar.rs")
+            .file("bar".as_bytes().to_vec(), "baz.rs")
+            .file(Path::new("bar"), "baz.txt")
+            .file(Path::new("qux"), "qux.txt")
+            .build();
+        let plural = TestContext::builder()
+            .run_command([""])
+            .test("", "", 0)
+            .files([
+                ("foo".as_bytes().to_vec(), "bar.rs"),
+                ("bar".as_bytes().to_vec(), "baz.rs"),
+            ])
+            .files([(Path::new("bar"), "baz.txt"), (Path::new("qux"), "qux.txt")])
+            .build();
+
+        assert_eq!(singular.test_cases, plural.test_cases);
+    }
+
+    /// A few `compile_fail` tests to confirm the efficacy of the type-state builder
+    ///
+    /// No run method or tests
+    /// ```compile_fail
+    /// use erudite::context::TestContext;
+    /// let context = TestContext::builder()
+    ///     .build();
+    /// ```
+    ///
+    /// One test, but no run method
+    /// ```compile_fail
+    /// use erudite::context::TestContext;
+    /// let context = TestContext::builder()
+    ///     .test("foo", "bar", ())
+    ///     .build();
+    /// ```
+    ///
+    /// Many tests, but no run method
+    /// ```compile_fail
+    /// use erudite::context::TestContext;
+    /// let context = TestContext::builder()
+    ///     .test("foo", "bar", ())
+    ///     .test("foo", "bar", ())
+    ///     .test("foo", "bar", ())
+    ///     .build();
+    /// ```
+    ///
+    /// One test using `.tests`, but no run method
+    /// ```compile_fail
+    /// use erudite::context::TestContext;
+    /// let context = TestContext::builder()
+    ///     .tests([("foo", "bar", ())])
+    ///     .build();
+    /// ```
+    ///
+    /// Many tests using `.tests`, but no run method
+    /// ```compile_fail
+    /// use erudite::context::TestContext;
+    /// let context = TestContext::builder()
+    ///     .tests([("foo", "bar", ()), ("baz", "qux", ())])
+    ///     .build();
+    /// ```
+    ///
+    /// Run method, but no tests
+    /// ```compile_fail
+    /// use erudite::context::TestContext;
+    /// let context = TestContext::builder()
+    ///     .run_command(["rustc", "-o", "solution", "solution.rs"])
+    ///     .build();
+    /// ```
+    #[allow(unused)]
+    #[doc(hidden)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn type_state_builder_test() {}
+}

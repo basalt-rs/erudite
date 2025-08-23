@@ -13,6 +13,21 @@ impl From<&str> for ExpectedOutput {
     }
 }
 
+impl PartialEq for ExpectedOutput {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ExpectedOutput::String(s), ExpectedOutput::String(o)) => s == o,
+            (ExpectedOutput::String(_), ExpectedOutput::Regex(_)) => false,
+            (ExpectedOutput::Regex(_), ExpectedOutput::String(_)) => false,
+            // NOTE: this is not completely correct, as two different strings can match the same
+            // pattern, i.e., `..*` and `.+`, but it's good enough
+            (ExpectedOutput::Regex(s), ExpectedOutput::Regex(o)) => s.as_str() == o.as_str(),
+        }
+    }
+}
+
+impl Eq for ExpectedOutput {}
+
 impl ExpectedOutput {
     pub(crate) fn is_valid(&self, output: &str) -> bool {
         match self {
@@ -24,7 +39,7 @@ impl ExpectedOutput {
 }
 
 /// A test case which contains input, output, and some associated data
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestCase<T = ()> {
     pub(crate) input: String,
     pub(crate) output: ExpectedOutput,
