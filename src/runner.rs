@@ -328,7 +328,7 @@ impl<'a, T> TestRunner<'a, T> {
     /// instances of the test runner from a single context.
     ///
     /// If the intended behaviour is to read the file _now_, consider reading the file directly
-    /// and placing it into [`FileContent::bytes`].
+    /// and placing it into [`TestFileContent::bytes`].
     ///
     /// `destination` is path relative to the directory used for the test environment.  If
     /// destination an absolute path, then it will be made relative to the test environment, i.e.,
@@ -346,7 +346,7 @@ impl<'a, T> TestRunner<'a, T> {
     /// instances of the test runner from a single context.
     ///
     /// If the intended behaviour is to read the file _now_, consider reading the file directly
-    /// and placing it into [`FileContent::bytes`].
+    /// and placing it into [`TestFileContent::bytes`].
     ///
     /// `destination` is path relative to the directory used for the test environment.  If
     /// destination an absolute path, then it will be made relative to the test environment, i.e.,
