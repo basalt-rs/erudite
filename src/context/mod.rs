@@ -1,133 +1,11 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
-use derive_more::From;
 use leucite::{MemorySize, Rules};
 
 mod builder;
 pub use builder::TestContextBuilder;
 
-use crate::{cases::TestCase, runner::TestRunner};
-
-/// Configuration for how a file should be setup for test cases to be run
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileConfig {
-    /// This path is relative to the temporary directory created while running tests
-    src: FileContent,
-    dest: PathBuf,
-}
-
-impl FileConfig {
-    pub fn new(src: impl Into<FileContent>, dest: impl AsRef<Path>) -> Self {
-        let dest = dest.as_ref();
-        let dest = if dest.is_absolute() {
-            dest.strip_prefix("/").unwrap().to_path_buf()
-        } else {
-            dest.to_path_buf()
-        };
-
-        Self {
-            src: src.into(),
-            dest,
-        }
-    }
-
-    pub(crate) async fn write_file(&self, base: impl AsRef<Path>) -> std::io::Result<u64> {
-        let target = base.as_ref().join(&self.dest);
-        match self.src {
-            FileContent::Path(ref path) => tokio::fs::copy(path, target).await,
-            FileContent::Bytes(ref contents) => tokio::fs::write(target, contents)
-                .await
-                .map(|_| contents.len() as _),
-        }
-    }
-
-    pub fn dest(&self) -> &Path {
-        &self.dest
-    }
-}
-
-impl<S, D> From<(S, D)> for FileConfig
-where
-    S: Into<FileContent>,
-    D: AsRef<Path>,
-{
-    fn from((source, destination): (S, D)) -> Self {
-        Self::new(source, destination)
-    }
-}
-
-/// Representation of the content of a file to be added into a test environment
-///
-/// [`FileContent::Path`] represents a path on the host system.  The test runner will copy from
-/// this path into the test environment _at compile time_.  If the data should be loaded now,
-/// consider using [`FileContent::Bytes`].
-///
-/// [`FileContent::Bytes`] contains a vec of bytes that will be written to the file when the tests
-/// are compiled.
-#[derive(Clone, Debug, From, PartialEq, Eq)]
-pub enum FileContent {
-    /// Copies a file directly from this path
-    ///
-    /// NOTE: This happens when the tests are compiled/run.  If you want to load the file into
-    /// memory first, use [`FileContent::Bytes`].
-    Path(PathBuf),
-    /// Creates a new file with this content
-    Bytes(Vec<u8>),
-}
-
-impl From<&Path> for FileContent {
-    fn from(value: &Path) -> Self {
-        Self::path(value)
-    }
-}
-
-impl From<&[u8]> for FileContent {
-    fn from(value: &[u8]) -> Self {
-        Self::bytes(value)
-    }
-}
-
-impl<const N: usize> From<&[u8; N]> for FileContent {
-    fn from(value: &[u8; N]) -> Self {
-        Self::bytes(value)
-    }
-}
-
-impl FileContent {
-    /// Construct a `FileContent::Path` from something that's like a path
-    ///
-    /// ```
-    /// # use erudite::context::FileContent;
-    /// let content = FileContent::path("/foo/bar");
-    /// ```
-    pub fn path(path: impl Into<PathBuf>) -> Self {
-        Self::Path(path.into())
-    }
-
-    /// Construct a `FileContent::Bytes` from something that's like a string.
-    ///
-    /// ```
-    /// # use erudite::context::FileContent;
-    /// let content = FileContent::string("// some rust code");
-    /// ```
-    pub fn string(string: impl Into<String>) -> Self {
-        Self::bytes(string.into())
-    }
-
-    /// Construct a `FileContent::Bytes` from raw bytes
-    ///
-    /// ```
-    /// # use erudite::context::FileContent;
-    /// let content = FileContent::bytes([0xfa, 0xca, 0xde]);
-    /// ```
-    pub fn bytes(bytes: impl Into<Vec<u8>>) -> Self {
-        Self::Bytes(bytes.into())
-    }
-}
+use crate::{cases::TestCase, runner::TestRunner, FileConfig};
 
 // TODO: rename (and update test names)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -247,7 +125,10 @@ mod test {
 
     use tmpdir::TmpDir;
 
-    use crate::context::{CommandConfig, FileConfig, FileContent};
+    use crate::{
+        context::{CommandConfig, FileConfig},
+        FileContent,
+    };
 
     #[tokio::test]
     async fn file_config_path() {
@@ -268,6 +149,32 @@ mod test {
             .await
             .expect("failed while reading file");
         assert_eq!(read, "some content");
+    }
+
+    #[tokio::test]
+    async fn file_config_path_dir() {
+        let tmpdir = TmpDir::new("erudite-test").await.unwrap();
+        let source = tmpdir.as_ref().join("foo");
+        tokio::fs::create_dir_all(&source).await.unwrap();
+        tokio::fs::write(source.join("bar.txt"), "Some content in /foo/bar.txt")
+            .await
+            .unwrap();
+
+        let config = FileConfig::new(source, "out");
+        assert_eq!(config.dest(), Path::new("out"));
+        config
+            .write_file(&tmpdir)
+            .await
+            .expect("failed while copying file");
+
+        let dir = tokio::fs::metadata(tmpdir.as_ref().join("foo"))
+            .await
+            .expect("failed while reading file");
+        assert!(dir.is_dir());
+        let read = tokio::fs::read_to_string(tmpdir.as_ref().join("foo/bar.txt"))
+            .await
+            .expect("failed while reading file");
+        assert_eq!(read, "Some content in /foo/bar.txt");
     }
 
     #[tokio::test]

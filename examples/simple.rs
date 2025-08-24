@@ -1,6 +1,6 @@
 use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
-use erudite::{context::TestContext, runner::TestFileContent};
+use erudite::{context::TestContext, BorrowedFileContent};
 use leucite::Rules;
 use regex::Regex;
 use tracing::info;
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let compiled = Arc::new(context)
         .test_runner()
         .file(
-            TestFileContent::string(include_str!("./solution.rs")),
+            BorrowedFileContent::string(include_str!("./solution.rs")),
             Path::new("./solution.rs"),
         )
         .filter_tests(|test| *test.data())

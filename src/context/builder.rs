@@ -1,6 +1,9 @@
-use crate::cases::{ExpectedOutput, TestCase};
+use crate::{
+    cases::{ExpectedOutput, TestCase},
+    FileContent,
+};
 
-use super::{CommandConfig, FileConfig, FileContent, TestContext};
+use super::{CommandConfig, FileConfig, TestContext};
 use std::{marker::PhantomData, path::Path, time::Duration};
 
 use leucite::{MemorySize, Rules};
@@ -37,7 +40,7 @@ use hidden::*;
 /// # Usage
 ///
 /// ```
-/// # use erudite::{context::{FileContent, TestContext}, Rules, MemorySize};
+/// # use erudite::{context::TestContext, FileContent, Rules, MemorySize};
 /// # use std::time::Duration;
 /// # let rules = Rules::new();
 /// let context = TestContext::builder()
@@ -165,7 +168,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// [`TestRunner::compile`]: crate::runner::TestRunner::compile
     ///
     /// ```
-    /// # use erudite::context::{TestContext, FileContent};
+    /// # use erudite::{FileContent, context::TestContext};
     /// let ctx = TestContext::builder()
     ///     .compile_command(["gcc", "-o", "solution", "solution.c"])
     ///     .run_command(["solution.c"])
@@ -196,7 +199,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// `/foo/bar` -> `<test-env>/foo/bar`.
     ///
     /// ```
-    /// # use erudite::context::{TestContext, FileContent};
+    /// # use erudite::{FileContent, context::TestContext};
     /// let ctx = TestContext::builder()
     ///     .run_command(["node", "solution.js"])
     ///     .test("hello world", "dlrow olleh", true)
@@ -224,7 +227,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// `/foo/bar` -> `<test-env>/foo/bar`.
     ///
     /// ```
-    /// # use erudite::context::{TestContext, FileContent, FileConfig};
+    /// # use erudite::{FileContent, FileConfig, context::TestContext};
     /// let ctx = TestContext::builder()
     ///     .run_command(["node", "solution.js"])
     ///     .test("hello world", "dlrow olleh", true)

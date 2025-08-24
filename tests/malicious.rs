@@ -1,9 +1,6 @@
 use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
-use erudite::{
-    context::TestContext,
-    runner::{TestFileContent, TestResultState},
-};
+use erudite::{context::TestContext, runner::TestResultState, BorrowedFileContent};
 use leucite::Rules;
 
 #[tokio::test]
@@ -26,7 +23,7 @@ async fn malicious_fail() -> Result<(), Box<dyn Error>> {
     let compiled = context
         .test_runner()
         .file(
-            TestFileContent::string(include_str!("./malicious.js")),
+            BorrowedFileContent::string(include_str!("./malicious.js")),
             Path::new("malicious.js"),
         )
         .collect_output(true)

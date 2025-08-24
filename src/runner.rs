@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use derive_more::From;
 use leucite::{CommandExt, Rules};
 use tmpdir::TmpDir;
 use tokio::{
@@ -22,140 +21,8 @@ use crate::{
     cases::TestCase,
     context::{CommandConfig, TestContext},
     error::{CompileError, CreateFilesError, SpawnTestError},
-    Bytes, Output,
+    BorrowedFileConfig, BorrowedFileContent, Bytes, Output,
 };
-
-#[derive(PartialEq, Debug)]
-pub struct TestFileConfig<'a> {
-    /// This path is relative to the temporary directory created while running tests
-    dest: PathBuf,
-    src: TestFileContent<'a>,
-}
-
-impl<'a> TestFileConfig<'a> {
-    pub fn new(src: impl Into<TestFileContent<'a>>, dest: impl AsRef<Path>) -> Self {
-        let dest = dest.as_ref();
-        let dest = if dest.is_absolute() {
-            dest.strip_prefix("/").unwrap().to_path_buf()
-        } else {
-            dest.to_path_buf()
-        };
-
-        Self {
-            src: src.into(),
-            dest,
-        }
-    }
-
-    pub fn dest(&self) -> &Path {
-        &self.dest
-    }
-
-    async fn write_file(&mut self, base: impl AsRef<Path>) -> std::io::Result<u64> {
-        let target = base.as_ref().join(&self.dest);
-        match self.src.0 {
-            TestFileContentInner::Path(ref path) => tokio::fs::copy(path, target).await,
-            TestFileContentInner::Bytes(ref contents) => tokio::fs::write(target, contents)
-                .await
-                .map(|_| contents.len() as _),
-            TestFileContentInner::Reader(ref mut reader) => {
-                let mut out = tokio::fs::File::create(target).await?;
-                tokio::io::copy(reader, &mut out).await
-            }
-        }
-    }
-}
-
-impl<'a, S, D> From<(S, D)> for TestFileConfig<'a>
-where
-    S: Into<TestFileContent<'a>>,
-    D: AsRef<Path>,
-{
-    fn from((source, destination): (S, D)) -> Self {
-        Self::new(source, destination)
-    }
-}
-
-/// A trait which is added to all [`AsyncRead`] + [`Unpin`]
-#[doc(hidden)]
-pub trait AsyncReadUnpin: AsyncRead + Unpin {}
-impl<T> AsyncReadUnpin for T where T: AsyncRead + Unpin {}
-
-/// Some form of content that will be used to create a file when a test is compiled
-#[derive(From, PartialEq, Debug)]
-pub struct TestFileContent<'a>(TestFileContentInner<'a>);
-// NOTE: This enum is wrapped so that it can't be created directly by a consuming library
-#[derive(From, derive_more::Debug)]
-enum TestFileContentInner<'a> {
-    /// Copies a file directly from this path
-    ///
-    /// NOTE: This happens when the tests are actually run.  If you want to load the file into
-    /// memory first, use [`Self::Bytes`].
-    Path(&'a Path),
-    /// Creates a new file with this content
-    Bytes(&'a [u8]),
-    #[debug("Reader")]
-    Reader(&'a mut dyn AsyncReadUnpin),
-}
-
-impl PartialEq for TestFileContentInner<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (TestFileContentInner::Path(a), TestFileContentInner::Path(b)) => a == b,
-            (TestFileContentInner::Path(_), TestFileContentInner::Bytes(_)) => false,
-            (TestFileContentInner::Path(_), TestFileContentInner::Reader(_)) => false,
-            (TestFileContentInner::Bytes(_), TestFileContentInner::Path(_)) => false,
-            (TestFileContentInner::Bytes(a), TestFileContentInner::Bytes(b)) => a == b,
-            (TestFileContentInner::Bytes(_), TestFileContentInner::Reader(_)) => false,
-            (TestFileContentInner::Reader(_), TestFileContentInner::Path(_)) => false,
-            (TestFileContentInner::Reader(_), TestFileContentInner::Bytes(_)) => false,
-            (TestFileContentInner::Reader(_), TestFileContentInner::Reader(_)) => false, // This is not actually possible to check, so assume false
-        }
-    }
-}
-
-impl<'a> TestFileContent<'a> {
-    /// Copy the file directly from this path on the host machine
-    ///
-    /// Note: The copy happens when tests are compiled.  If you want to load the file into memory
-    /// first, use [`TestFileContent::bytes`].
-    pub fn path(path: &'a Path) -> Self {
-        Self(TestFileContentInner::Path(path))
-    }
-
-    /// Write a string to the file
-    pub fn string(string: &'a str) -> Self {
-        Self(TestFileContentInner::Bytes(string.as_bytes()))
-    }
-
-    /// Write bytes to the file
-    pub fn bytes(bytes: &'a [u8]) -> Self {
-        Self(TestFileContentInner::Bytes(bytes))
-    }
-
-    /// Copy from this reader into the file
-    pub fn reader<R: AsyncRead + Unpin>(r: &'a mut R) -> Self {
-        Self(TestFileContentInner::Reader(r))
-    }
-}
-
-impl<'a> From<&'a [u8]> for TestFileContent<'a> {
-    fn from(value: &'a [u8]) -> Self {
-        Self::bytes(value)
-    }
-}
-
-impl<'a> From<&'a Path> for TestFileContent<'a> {
-    fn from(value: &'a Path) -> Self {
-        Self::path(value)
-    }
-}
-
-impl<'a> From<&'a PathBuf> for TestFileContent<'a> {
-    fn from(value: &'a PathBuf) -> Self {
-        Self::path(value)
-    }
-}
 
 /// Parse a command from argv.  `argv[0]` is the program, `argv[1..]` is the args.
 /// Returns `None` if the command is not valid.
@@ -302,7 +169,7 @@ async fn wait_with_output_and_timeout(
 #[derive(Debug)]
 pub struct TestRunner<'a, T> {
     context: Arc<TestContext<T>>,
-    files: Vec<TestFileConfig<'a>>,
+    files: Vec<BorrowedFileConfig<'a>>,
     test_filter: Option<fn(&TestCase<T>) -> bool>,
     cwd: Option<&'a Path>,
     collect_output: bool,
@@ -328,13 +195,13 @@ impl<'a, T> TestRunner<'a, T> {
     /// instances of the test runner from a single context.
     ///
     /// If the intended behaviour is to read the file _now_, consider reading the file directly
-    /// and placing it into [`TestFileContent::bytes`].
+    /// and placing it into [`BorrowedFileContent::bytes`].
     ///
     /// `destination` is path relative to the directory used for the test environment.  If
     /// destination an absolute path, then it will be made relative to the test environment, i.e.,
     /// `/foo/bar` -> `<test-env>/foo/bar`.
-    pub fn file(mut self, source: impl Into<TestFileContent<'a>>, dest: &'a Path) -> Self {
-        self.files.push(TestFileConfig::new(source, dest));
+    pub fn file(mut self, source: impl Into<BorrowedFileContent<'a>>, dest: &'a Path) -> Self {
+        self.files.push(BorrowedFileConfig::new(source, dest));
         self
     }
 
@@ -346,12 +213,15 @@ impl<'a, T> TestRunner<'a, T> {
     /// instances of the test runner from a single context.
     ///
     /// If the intended behaviour is to read the file _now_, consider reading the file directly
-    /// and placing it into [`TestFileContent::bytes`].
+    /// and placing it into [`BorrowedFileContent::bytes`].
     ///
     /// `destination` is path relative to the directory used for the test environment.  If
     /// destination an absolute path, then it will be made relative to the test environment, i.e.,
     /// `/foo/bar` -> `<test-env>/foo/bar`.
-    pub fn files(mut self, files: impl IntoIterator<Item = impl Into<TestFileConfig<'a>>>) -> Self {
+    pub fn files(
+        mut self,
+        files: impl IntoIterator<Item = impl Into<BorrowedFileConfig<'a>>>,
+    ) -> Self {
         self.files.extend(files.into_iter().map(Into::into));
         self
     }
@@ -958,7 +828,7 @@ mod test {
 
     use crate::{
         context::TestContext,
-        runner::{TestFileConfig, TestFileContent, TestResult, TestResultState},
+        runner::{BorrowedFileConfig, BorrowedFileContent, TestResult, TestResultState},
         Bytes, Output,
     };
 
@@ -970,7 +840,7 @@ mod test {
             .await
             .expect("failed setting up test");
 
-        let mut config = TestFileConfig::new(&input, "out.rs");
+        let mut config = BorrowedFileConfig::new(&input, Path::new("out.rs"));
         assert_eq!(config.dest(), Path::new("out.rs"));
         config
             .write_file(&tmpdir)
@@ -987,7 +857,8 @@ mod test {
     async fn test_file_config_bytes() {
         let tmpdir = TmpDir::new("erudite-test").await.unwrap();
 
-        let mut config = TestFileConfig::new(&b"some content from bytes"[..], "out.rs");
+        let mut config =
+            BorrowedFileConfig::new(&b"some content from bytes"[..], Path::new("out.rs"));
         assert_eq!(config.dest(), Path::new("out.rs"));
         config
             .write_file(&tmpdir)
@@ -1007,7 +878,10 @@ mod test {
         let inner = b"some content from reader".to_vec();
         let mut reader = Cursor::new(inner);
 
-        let mut config = TestFileConfig::new(TestFileContent::reader(&mut reader), "out.rs");
+        let mut config = BorrowedFileConfig::new(
+            BorrowedFileContent::reader(&mut reader),
+            Path::new("out.rs"),
+        );
         assert_eq!(config.dest(), Path::new("out.rs"));
         config
             .write_file(&tmpdir)
@@ -1023,41 +897,44 @@ mod test {
 
     #[test]
     fn test_file_config_from_tuple2() {
-        let cfg: TestFileConfig = (Path::new("foo/bar"), "foo/bar").into();
-        assert_eq!(cfg, TestFileConfig::new(Path::new("foo/bar"), "foo/bar"));
+        let cfg: BorrowedFileConfig = (Path::new("foo/bar"), Path::new("foo/bar")).into();
+        assert_eq!(
+            cfg,
+            BorrowedFileConfig::new(Path::new("foo/bar"), Path::new("foo/bar"))
+        );
     }
 
     #[test]
     fn file_content_path() {
-        let content = TestFileContent::path(Path::new("foo/bar"));
-        assert_eq!(content, TestFileContent::from(Path::new("foo/bar")));
-        let content: TestFileContent = Path::new("foo/bar").into();
-        assert_eq!(content, TestFileContent::from(Path::new("foo/bar")));
+        let content = BorrowedFileContent::path(Path::new("foo/bar"));
+        assert_eq!(content, BorrowedFileContent::from(Path::new("foo/bar")));
+        let content: BorrowedFileContent = Path::new("foo/bar").into();
+        assert_eq!(content, BorrowedFileContent::from(Path::new("foo/bar")));
     }
 
     #[test]
     fn test_file_content_string() {
-        let content = TestFileContent::string("hello world");
-        assert_eq!(content, TestFileContent::from("hello world".as_bytes()));
+        let content = BorrowedFileContent::string("hello world");
+        assert_eq!(content, BorrowedFileContent::from("hello world".as_bytes()));
     }
 
     #[test]
     fn test_file_content_bytes() {
         let bytes = vec![0xca, 0xfe, 0xba, 0xbe];
-        let content = TestFileContent::bytes(&bytes);
-        assert_eq!(content, TestFileContent::from(&*bytes));
+        let content = BorrowedFileContent::bytes(&bytes);
+        assert_eq!(content, BorrowedFileContent::from(&*bytes));
     }
 
     #[test]
     fn test_file_content_equality() {
-        let path1 = TestFileContent::path(Path::new("a"));
-        let path2 = TestFileContent::path(Path::new("b"));
-        let bytes1 = TestFileContent::bytes(b"a");
-        let bytes2 = TestFileContent::bytes(b"b");
+        let path1 = BorrowedFileContent::path(Path::new("a"));
+        let path2 = BorrowedFileContent::path(Path::new("b"));
+        let bytes1 = BorrowedFileContent::bytes(b"a");
+        let bytes2 = BorrowedFileContent::bytes(b"b");
         let mut a_bytes = &b"a"[..];
         let mut b_bytes = &b"b"[..];
-        let reader1 = TestFileContent::reader(&mut a_bytes);
-        let reader2 = TestFileContent::reader(&mut b_bytes);
+        let reader1 = BorrowedFileContent::reader(&mut a_bytes);
+        let reader2 = BorrowedFileContent::reader(&mut b_bytes);
 
         assert_eq!(path1, path1);
         assert_ne!(path1, path2);

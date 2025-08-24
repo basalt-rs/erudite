@@ -3,7 +3,8 @@ use std::{error::Error, path::Path, sync::Arc, time::Duration};
 use erudite::{
     context::TestContext,
     error::CompileError,
-    runner::{CompileResultState, TestFileContent, TestResultState},
+    runner::{CompileResultState, TestResultState},
+    BorrowedFileContent,
 };
 use leucite::{MemorySize, Rules};
 
@@ -33,7 +34,7 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
     let compiled = context
         .test_runner()
         .file(
-            TestFileContent::string(include_str!("./Solution.java")),
+            BorrowedFileContent::string(include_str!("./Solution.java")),
             Path::new("Solution.java"),
         )
         .collect_output(true)
@@ -93,7 +94,7 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
     let compiled = context
         .test_runner()
         .file(
-            TestFileContent::string(include_str!("./Solution.java")),
+            BorrowedFileContent::string(include_str!("./Solution.java")),
             Path::new("Solution.java"),
         )
         .collect_output(true)
