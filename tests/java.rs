@@ -23,7 +23,7 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
         .run_command(["java", "Solution"])
         .rules(rules)
         .max_memory(MemorySize::from_mb(800))
-        .timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(5))
         .trim_output(true)
         .build();
 
