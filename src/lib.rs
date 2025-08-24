@@ -28,6 +28,7 @@
 //! [`TestResult`]s which contain information about the output of a test, the time it took, and
 //! whether that test passed.
 //!
+//! [`Arc`]: std::sync::Arc
 //! [`TestRunner`]: crate::runner::TestRunner
 //! [`TestHandle`]: crate::runner::TestHandle
 //! [`TestResult`]: crate::runner::TestResult
@@ -44,7 +45,7 @@
 //! #
 //! # let runner_code = include_str!("../tests/code/reverse-runner.rs");
 //! # let solution_code = include_str!("../tests/code/reverse-solution.rs");
-//!
+//! #
 //! let context = TestContext::builder()
 //!     .compile_command(["rustc", "-o", "runner", "runner.rs"])
 //!     .run_command(["./runner"])
