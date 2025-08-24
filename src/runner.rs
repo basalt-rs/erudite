@@ -158,7 +158,8 @@ async fn wait_with_output_and_timeout(
 ///     .build();
 /// let context = Arc::new(context);
 ///
-/// let test_handle = context.test_runner()
+/// let test_handle = context
+///     .test_runner()
 ///     .file(Path::new("user-solution.js"), Path::new("solution.js"))
 ///     .filter_tests(|t| t.data().visible)
 ///     .cwd(Path::new("./test"))
@@ -375,7 +376,8 @@ where
     ///     .build();
     /// let context = Arc::new(context);
     ///
-    /// let compiled = context.test_runner()
+    /// let compiled = context
+    ///     .test_runner()
     ///     .file(Path::new("user-solution.js"), Path::new("solution.js"))
     ///     .filter_tests(|t| t.data().visible)
     ///     .cwd(Path::new("./test"))
@@ -458,7 +460,8 @@ where
     ///     .build();
     /// let context = Arc::new(context);
     ///
-    /// let test_handle = context.test_runner()
+    /// let test_handle = context
+    ///     .test_runner()
     ///     .file(Path::new("user-solution.js"), Path::new("solution.js"))
     ///     .filter_tests(|t| t.data().visible)
     ///     .cwd(Path::new("./test"))
@@ -604,7 +607,8 @@ where
     ///     .build();
     /// let context = Arc::new(context);
     ///
-    /// let compiled = context.test_runner()
+    /// let compiled = context
+    ///     .test_runner()
     ///     .file(Path::new("user-solution.js"), Path::new("solution.js"))
     ///     .filter_tests(|t| t.data().visible)
     ///     .cwd(Path::new("./test"))
