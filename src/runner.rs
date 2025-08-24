@@ -1,10 +1,12 @@
 use std::{
+    io::ErrorKind,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::Duration,
 };
 
+use derive_more::From;
 use leucite::{CommandExt, Rules};
 use tmpdir::TmpDir;
 use tokio::{
@@ -23,29 +25,54 @@ use crate::{
     Bytes, Output,
 };
 
-struct TestFileConfig<'a> {
+#[derive(PartialEq, Debug)]
+pub struct TestFileConfig<'a> {
     /// This path is relative to the temporary directory created while running tests
-    dest: &'a Path,
+    dest: PathBuf,
     src: TestFileContent<'a>,
 }
 
-impl TestFileConfig<'_> {
-    async fn write_file(&mut self, base: &Path) -> std::io::Result<u64> {
-        let target = base.join(self.dest);
+impl<'a> TestFileConfig<'a> {
+    pub fn new(src: impl Into<TestFileContent<'a>>, dest: impl AsRef<Path>) -> Self {
+        let dest = dest.as_ref();
+        let dest = if dest.is_absolute() {
+            dest.strip_prefix("/").unwrap().to_path_buf()
+        } else {
+            dest.to_path_buf()
+        };
+
+        Self {
+            src: src.into(),
+            dest,
+        }
+    }
+
+    pub fn dest(&self) -> &Path {
+        &self.dest
+    }
+
+    async fn write_file(&mut self, base: impl AsRef<Path>) -> std::io::Result<u64> {
+        let target = base.as_ref().join(&self.dest);
         match self.src.0 {
             TestFileContentInner::Path(ref path) => tokio::fs::copy(path, target).await,
             TestFileContentInner::Bytes(ref contents) => tokio::fs::write(target, contents)
                 .await
                 .map(|_| contents.len() as _),
             TestFileContentInner::Reader(ref mut reader) => {
-                let mut out = tokio::fs::File::open(target).await?;
+                let mut out = tokio::fs::File::create(target).await?;
                 tokio::io::copy(reader, &mut out).await
             }
         }
     }
+}
 
-    pub fn dest(&self) -> &Path {
-        self.dest
+impl<'a, S, D> From<(S, D)> for TestFileConfig<'a>
+where
+    S: Into<TestFileContent<'a>>,
+    D: AsRef<Path>,
+{
+    fn from((source, destination): (S, D)) -> Self {
+        Self::new(source, destination)
     }
 }
 
@@ -55,8 +82,10 @@ pub trait AsyncReadUnpin: AsyncRead + Unpin {}
 impl<T> AsyncReadUnpin for T where T: AsyncRead + Unpin {}
 
 /// Some form of content that will be used to create a file when a test is compiled
+#[derive(From, PartialEq, Debug)]
 pub struct TestFileContent<'a>(TestFileContentInner<'a>);
 // NOTE: This enum is wrapped so that it can't be created directly by a consuming library
+#[derive(From, derive_more::Debug)]
 enum TestFileContentInner<'a> {
     /// Copies a file directly from this path
     ///
@@ -65,7 +94,24 @@ enum TestFileContentInner<'a> {
     Path(&'a Path),
     /// Creates a new file with this content
     Bytes(&'a [u8]),
+    #[debug("Reader")]
     Reader(&'a mut dyn AsyncReadUnpin),
+}
+
+impl PartialEq for TestFileContentInner<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (TestFileContentInner::Path(a), TestFileContentInner::Path(b)) => a == b,
+            (TestFileContentInner::Path(_), TestFileContentInner::Bytes(_)) => false,
+            (TestFileContentInner::Path(_), TestFileContentInner::Reader(_)) => false,
+            (TestFileContentInner::Bytes(_), TestFileContentInner::Path(_)) => false,
+            (TestFileContentInner::Bytes(a), TestFileContentInner::Bytes(b)) => a == b,
+            (TestFileContentInner::Bytes(_), TestFileContentInner::Reader(_)) => false,
+            (TestFileContentInner::Reader(_), TestFileContentInner::Path(_)) => false,
+            (TestFileContentInner::Reader(_), TestFileContentInner::Bytes(_)) => false,
+            (TestFileContentInner::Reader(_), TestFileContentInner::Reader(_)) => false, // This is not actually possible to check, so assume false
+        }
+    }
 }
 
 impl<'a> TestFileContent<'a> {
@@ -93,8 +139,20 @@ impl<'a> TestFileContent<'a> {
     }
 }
 
+impl<'a> From<&'a [u8]> for TestFileContent<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        Self::bytes(value)
+    }
+}
+
 impl<'a> From<&'a Path> for TestFileContent<'a> {
     fn from(value: &'a Path) -> Self {
+        Self::path(value)
+    }
+}
+
+impl<'a> From<&'a PathBuf> for TestFileContent<'a> {
+    fn from(value: &'a PathBuf) -> Self {
         Self::path(value)
     }
 }
@@ -123,13 +181,16 @@ async fn wait_with_output_and_timeout(
     } else {
         None
     };
-    let stdout_pipe = child.stdout.take().expect("We only take this once");
-    let stderr_pipe = child.stderr.take().expect("We only take this once");
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
 
-    async fn read_to_end<R>(mut r: R, stdout: bool) -> std::io::Result<Vec<u8>>
+    async fn read_to_end<R>(r: Option<R>, stdout: bool) -> std::io::Result<Vec<u8>>
     where
         R: AsyncRead + Unpin,
     {
+        let Some(mut r) = r else {
+            return Ok(Vec::new());
+        };
         let mut out = Vec::new();
         let bytes = r.read_to_end(&mut out).await?;
         trace!(
@@ -146,10 +207,26 @@ async fn wait_with_output_and_timeout(
     {
         let input = input.as_ref();
         let mut bytes = 0;
-        w.write_all(input).await?;
+        match w.write_all(input).await {
+            Ok(()) => {}
+            // if pipe is broken, we don't really care
+            Err(e) if e.kind() == ErrorKind::BrokenPipe => {
+                trace!("Pipe broken while writing stdin");
+                return Ok(());
+            }
+            Err(e) => Err(e)?,
+        }
         bytes += input.len();
         // Required for empty input to work well in some languages
-        w.write_u8(b'\n').await?;
+        match w.write_u8(b'\n').await {
+            Ok(()) => {}
+            // if pipe is broken, we don't really care
+            Err(e) if e.kind() == ErrorKind::BrokenPipe => {
+                trace!("Pipe broken while writing stdin");
+                return Ok(());
+            }
+            Err(e) => Err(e)?,
+        }
         bytes += 1;
         trace!(bytes, "finished writing to stdin");
         Ok(())
@@ -222,6 +299,7 @@ async fn wait_with_output_and_timeout(
 /// # Ok(()) }
 /// ```
 #[must_use]
+#[derive(Debug)]
 pub struct TestRunner<'a, T> {
     context: Arc<TestContext<T>>,
     files: Vec<TestFileConfig<'a>>,
@@ -230,7 +308,7 @@ pub struct TestRunner<'a, T> {
     collect_output: bool,
 }
 
-/// Builder functions
+// Builder functions
 impl<'a, T> TestRunner<'a, T> {
     pub(crate) fn new(context: Arc<TestContext<T>>) -> Self {
         Self {
@@ -242,12 +320,39 @@ impl<'a, T> TestRunner<'a, T> {
         }
     }
 
-    /// Add a file to this test runner.  This file will be added before the test is compiled.
+    /// Add a file to be inserted into the runtime environment of the test.  This is added before
+    /// compilation, so it works well for libraries or input/output manipulation.
+    ///
+    /// If `source` is a path, the file will only be copied when a test is compiled, meaning
+    /// that if the file changes or is removed, then the output may differ between two
+    /// instances of the test runner from a single context.
+    ///
+    /// If the intended behaviour is to read the file _now_, consider reading the file directly
+    /// and placing it into [`FileContent::bytes`].
+    ///
+    /// `destination` is path relative to the directory used for the test environment.  If
+    /// destination an absolute path, then it will be made relative to the test environment, i.e.,
+    /// `/foo/bar` -> `<test-env>/foo/bar`.
     pub fn file(mut self, source: impl Into<TestFileContent<'a>>, dest: &'a Path) -> Self {
-        self.files.push(TestFileConfig {
-            dest,
-            src: source.into(),
-        });
+        self.files.push(TestFileConfig::new(source, dest));
+        self
+    }
+
+    /// Add multiple files to be inserted into the runtime environment of the test.  These files
+    /// are added before compilation, so it works well for libraries or input/output manipulation.
+    ///
+    /// If `source` is a path, the file will only be copied when a test is compiled, meaning
+    /// that if the file changes or is removed, then the output may differ between two
+    /// instances of the test runner from a single context.
+    ///
+    /// If the intended behaviour is to read the file _now_, consider reading the file directly
+    /// and placing it into [`FileContent::bytes`].
+    ///
+    /// `destination` is path relative to the directory used for the test environment.  If
+    /// destination an absolute path, then it will be made relative to the test environment, i.e.,
+    /// `/foo/bar` -> `<test-env>/foo/bar`.
+    pub fn files(mut self, files: impl IntoIterator<Item = impl Into<TestFileConfig<'a>>>) -> Self {
+        self.files.extend(files.into_iter().map(Into::into));
         self
     }
 
@@ -357,8 +462,10 @@ where
         }))
     }
 
+    // returns (compile rules, run rules)
     fn create_rules(&self, cwd: &Path) -> (Option<Arc<Rules>>, Option<Arc<Rules>>) {
         let modify_rules = |rules: Rules| -> Rules { rules.clone().add_read_write(cwd) };
+        dbg!(&self.context.rules);
         match &self.context.rules {
             CommandConfig::None => (None, None),
             CommandConfig::Compile(ref r) => (Some(Arc::new(modify_rules(r.clone()))), None),
@@ -444,7 +551,7 @@ where
 
         if compile_output
             .as_ref()
-            .is_some_and(|c| c.state() == CompileResultState::RuntimeFail)
+            .is_some_and(|c| c.state() != CompileResultState::Success)
         {
             let compile_output = compile_output.unwrap();
             Err(CompileError::CompileFail(compile_output))
@@ -496,6 +603,7 @@ where
 
 /// A test runner that has been compiled already.  The tests are now able to be run.
 #[must_use]
+#[derive(Debug)]
 pub struct CompiledTestRunner<'a, T> {
     test_runner: TestRunner<'a, T>,
     cwd: PathBuf,
@@ -641,9 +749,10 @@ where
         trace!("spawning tests");
         let tests = self.spawn_tests();
 
+        let test_count = tests.len();
         TestHandle {
             joinset: tests,
-            test_count: self.test_runner.context.test_cases.len(),
+            test_count,
             compile_result: self.compile_result,
             _tmpdir: self.tmpdir,
         }
@@ -837,5 +946,507 @@ impl CompileResult {
     /// Get the exit status
     pub fn exit_status(&self) -> i32 {
         self.output.status
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{io::Cursor, path::Path, sync::Arc, time::Duration};
+
+    use leucite::Rules;
+    use tmpdir::TmpDir;
+
+    use crate::{
+        context::TestContext,
+        runner::{TestFileConfig, TestFileContent, TestResult, TestResultState},
+        Bytes, Output,
+    };
+
+    #[tokio::test]
+    async fn test_file_config_path() {
+        let tmpdir = TmpDir::new("erudite-test").await.unwrap();
+        let input = tmpdir.as_ref().join("in.rs");
+        tokio::fs::write(&input, "some content from string")
+            .await
+            .expect("failed setting up test");
+
+        let mut config = TestFileConfig::new(&input, "out.rs");
+        assert_eq!(config.dest(), Path::new("out.rs"));
+        config
+            .write_file(&tmpdir)
+            .await
+            .expect("failed while copying file");
+
+        let read = tokio::fs::read_to_string(tmpdir.as_ref().join("out.rs"))
+            .await
+            .expect("failed while reading file");
+        assert_eq!(read, "some content from string");
+    }
+
+    #[tokio::test]
+    async fn test_file_config_bytes() {
+        let tmpdir = TmpDir::new("erudite-test").await.unwrap();
+
+        let mut config = TestFileConfig::new(&b"some content from bytes"[..], "out.rs");
+        assert_eq!(config.dest(), Path::new("out.rs"));
+        config
+            .write_file(&tmpdir)
+            .await
+            .expect("failed while copying file");
+
+        let read = tokio::fs::read_to_string(tmpdir.as_ref().join("out.rs"))
+            .await
+            .expect("failed while reading file");
+        assert_eq!(read, "some content from bytes");
+    }
+
+    #[tokio::test]
+    async fn test_file_config_reader() {
+        let tmpdir = TmpDir::new("erudite-test").await.unwrap();
+
+        let inner = b"some content from reader".to_vec();
+        let mut reader = Cursor::new(inner);
+
+        let mut config = TestFileConfig::new(TestFileContent::reader(&mut reader), "out.rs");
+        assert_eq!(config.dest(), Path::new("out.rs"));
+        config
+            .write_file(&tmpdir)
+            .await
+            .expect("failed while copying file");
+
+        let read = tokio::fs::read_to_string(tmpdir.as_ref().join("out.rs"))
+            .await
+            .expect("failed while reading file");
+        assert_eq!(read, "some content from reader");
+        assert_eq!(reader.position(), reader.into_inner().len() as _);
+    }
+
+    #[test]
+    fn test_file_config_from_tuple2() {
+        let cfg: TestFileConfig = (Path::new("foo/bar"), "foo/bar").into();
+        assert_eq!(cfg, TestFileConfig::new(Path::new("foo/bar"), "foo/bar"));
+    }
+
+    #[test]
+    fn file_content_path() {
+        let content = TestFileContent::path(Path::new("foo/bar"));
+        assert_eq!(content, TestFileContent::from(Path::new("foo/bar")));
+        let content: TestFileContent = Path::new("foo/bar").into();
+        assert_eq!(content, TestFileContent::from(Path::new("foo/bar")));
+    }
+
+    #[test]
+    fn test_file_content_string() {
+        let content = TestFileContent::string("hello world");
+        assert_eq!(content, TestFileContent::from("hello world".as_bytes()));
+    }
+
+    #[test]
+    fn test_file_content_bytes() {
+        let bytes = vec![0xca, 0xfe, 0xba, 0xbe];
+        let content = TestFileContent::bytes(&bytes);
+        assert_eq!(content, TestFileContent::from(&*bytes));
+    }
+
+    #[test]
+    fn test_file_content_equality() {
+        let path1 = TestFileContent::path(Path::new("a"));
+        let path2 = TestFileContent::path(Path::new("b"));
+        let bytes1 = TestFileContent::bytes(b"a");
+        let bytes2 = TestFileContent::bytes(b"b");
+        let mut a_bytes = &b"a"[..];
+        let mut b_bytes = &b"b"[..];
+        let reader1 = TestFileContent::reader(&mut a_bytes);
+        let reader2 = TestFileContent::reader(&mut b_bytes);
+
+        assert_eq!(path1, path1);
+        assert_ne!(path1, path2);
+
+        assert_ne!(path1, bytes1);
+        assert_ne!(bytes1, path1);
+
+        assert_ne!(path1, reader1);
+        assert_ne!(reader1, path1);
+
+        assert_eq!(bytes1, bytes1);
+        assert_ne!(bytes1, bytes2);
+
+        assert_ne!(bytes1, reader1);
+        assert_ne!(reader1, bytes1);
+
+        assert_ne!(reader1, reader2);
+        assert_ne!(reader2, reader1);
+    }
+
+    #[test]
+    fn absolute_file_destination() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test("hello", "world", ())
+            .build();
+        let ctx = Arc::new(ctx);
+        let runner = ctx.test_runner().file(&b"hi"[..], Path::new("/bar.txt"));
+        assert_eq!(runner.files[0].dest(), Path::new("bar.txt"));
+    }
+
+    #[test]
+    fn absolute_files_destination() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test("hello", "world", ())
+            .build();
+        let ctx = Arc::new(ctx);
+        let runner = ctx.test_runner().files([
+            (&b"hello"[..], Path::new("/bar.txt")),
+            (&b"world"[..], Path::new("/foo/bar.rs")),
+        ]);
+        assert_eq!(runner.files[0].dest(), Path::new("bar.txt"));
+        assert_eq!(runner.files[1].dest(), Path::new("foo/bar.rs"));
+    }
+
+    #[test]
+    fn runner_test_tests_equivalent() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test("hello", "world", ())
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let runner1 = Arc::clone(&ctx).test_runner().files([
+            (&b"hello"[..], Path::new("/bar.txt")),
+            (&b"world"[..], Path::new("/foo/bar.rs")),
+        ]);
+
+        let runner2 = Arc::clone(&ctx)
+            .test_runner()
+            .file(&b"hello"[..], Path::new("/bar.txt"))
+            .file(&b"world"[..], Path::new("/foo/bar.rs"));
+
+        assert_eq!(runner1.files, runner2.files);
+    }
+
+    #[tokio::test]
+    async fn runner_with_filter() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "world"])
+            .test("hello", "world", true)
+            .test("hello", "world", true)
+            .test("hello", "world", true)
+            .test("hello", "world", false)
+            .test("hello", "world", false)
+            .test("hello", "world", false)
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let handle = Arc::clone(&ctx)
+            .test_runner()
+            .filter_tests(|t| *t.data())
+            .compile_and_run()
+            .await
+            .unwrap();
+
+        assert_eq!(handle.test_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn runner_without_filter() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "world"])
+            .test("hello", "world", true)
+            .test("hello", "world", true)
+            .test("hello", "world", true)
+            .test("hello", "world", false)
+            .test("hello", "world", false)
+            .test("hello", "world", false)
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let handle = Arc::clone(&ctx)
+            .test_runner()
+            .compile_and_run()
+            .await
+            .unwrap();
+
+        assert_eq!(handle.test_count(), 6);
+    }
+
+    #[tokio::test]
+    async fn custom_cwd() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "world"])
+            .test("hello", "world", ())
+            .file(b"some content", "foo.txt")
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let tmpdir = TmpDir::new("erudite-test").await.expect("creating tmpdir");
+        let _runner = Arc::clone(&ctx)
+            .test_runner()
+            .cwd(tmpdir.as_ref())
+            .compile()
+            .await
+            .unwrap();
+
+        let s = tokio::fs::read_to_string(dbg!(tmpdir.as_ref().join("foo.txt")))
+            .await
+            .expect("reading tmpdir");
+
+        assert_eq!(s, "some content");
+    }
+
+    #[tokio::test]
+    async fn create_file_error_missing_target() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "world"])
+            .test("hello", "world", ())
+            .file(b"some content", "foo.txt")
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let ret = Arc::clone(&ctx)
+            .test_runner()
+            .cwd(Path::new("/path/does/not/exist"))
+            .compile()
+            .await;
+        assert!(ret.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_file_error_missing_source_context() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "world"])
+            .test("hello", "world", ())
+            .file(Path::new("/path/does/not/exist"), "foo.txt")
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let ret = Arc::clone(&ctx).test_runner().compile().await;
+        assert!(ret.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_file_error_missing_source_runner() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "world"])
+            .test("hello", "world", ())
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let ret = Arc::clone(&ctx)
+            .test_runner()
+            .file(Path::new("/path/does/not/exist"), Path::new("foo.txt"))
+            .compile()
+            .await;
+        assert!(ret.is_err());
+    }
+
+    #[tokio::test]
+    async fn no_collect_output() {
+        let ctx = TestContext::builder()
+            .compile_command(["echo", "hello"])
+            .run_command(["echo", "world"])
+            .test("hello", "world", ())
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let output = Arc::clone(&ctx)
+            .test_runner()
+            .collect_output(false)
+            .compile()
+            .await
+            .unwrap();
+
+        assert!(output.compile_result().unwrap().stdout().is_empty());
+        assert!(output.compile_result().unwrap().stderr().is_empty());
+        assert_eq!(output.compile_result().unwrap().exit_status(), 0);
+    }
+
+    #[tokio::test]
+    async fn compile_timeout() {
+        let ctx = TestContext::builder()
+            .compile_command(["sleep", "10s"])
+            .run_command(["echo", "world"])
+            .compile_timeout(Duration::from_millis(100))
+            .test("hello", "world", ())
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let res = Arc::clone(&ctx)
+            .test_runner()
+            .collect_output(false)
+            .compile()
+            .await;
+
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn compile_only_rules() {
+        let rules = Rules::new();
+        let ctx = TestContext::builder()
+            .compile_command(["cat", "/bin/cat"])
+            .run_command(["echo", "world"])
+            .compile_timeout(Duration::from_millis(100))
+            .test("hello", "world", ())
+            .compile_rules(rules)
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let res = Arc::clone(&ctx).test_runner().compile().await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_only_rules() {
+        let rules = Rules::new();
+        let ctx = TestContext::builder()
+            .compile_command(["echo", "hello"])
+            .run_command(["cat", "/bin/cat"])
+            .compile_timeout(Duration::from_millis(100))
+            .test("hello", "world", ())
+            .run_rules(rules)
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let res = Arc::clone(&ctx).test_runner().compile().await.unwrap();
+        let mut tests = res.run();
+        assert!(tests.wait_next().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn both_rules_unique_compile_pass() {
+        let ctx = TestContext::builder()
+            .compile_command(["echo", "/bin/cat"])
+            .run_command(["cat", "/bin/cat"])
+            .compile_timeout(Duration::from_millis(100))
+            .test("hello", "world", ())
+            .compile_rules(Rules::new().add_read_only("/usr").add_read_only("/bin"))
+            .run_rules(Rules::new())
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let res = Arc::clone(&ctx).test_runner().compile().await.unwrap();
+        let mut tests = res.run();
+        assert!(tests.wait_next().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn both_rules_unique_compile_fail() {
+        let ctx = TestContext::builder()
+            .compile_command(["echo", "/bin/cat"])
+            .run_command(["cat", "/bin/cat"])
+            .compile_timeout(Duration::from_millis(100))
+            .test("hello", "world", ())
+            .compile_rules(Rules::new())
+            .run_rules(Rules::new().add_read_only("/usr").add_read_only("/bin"))
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let res = Arc::clone(&ctx).test_runner().compile().await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn both_rules_same() {
+        let ctx = TestContext::builder()
+            .compile_command(["echo", "/bin/cat"])
+            .run_command(["cat", "/bin/cat"])
+            .compile_timeout(Duration::from_millis(100))
+            .test("hello", "world", ())
+            .rules(Rules::new().add_read_only("/usr").add_read_only("/bin"))
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let res = Arc::clone(&ctx).test_runner().compile().await.unwrap();
+        let mut tests = res.run();
+        let test0 = tests.wait_next().await.unwrap().unwrap();
+        assert_eq!(test0.state(), TestResultState::IncorrectOutput); // /bin/cat is almost certainly not "world"
+    }
+
+    #[tokio::test]
+    async fn test_result_getters() {
+        let mut result = TestResult {
+            index: 42,
+            data: Some(String::from("this is not copy")),
+            output: Output::new("stdout".to_string(), "stderr".to_string(), 69),
+            state: TestResultState::Pass,
+            time_taken: Duration::from_secs(2),
+        };
+
+        assert_eq!(result.data(), Some(&"this is not copy".to_string()));
+        assert_eq!(result.data(), Some(&"this is not copy".to_string()));
+        assert_eq!(result.take_data(), Some("this is not copy".to_string()));
+        assert_eq!(result.take_data(), None);
+        assert_eq!(result.data(), None);
+
+        assert_eq!(result.index(), 42);
+        assert_eq!(
+            result.output(),
+            &Output::new("stdout".to_string(), "stderr".to_string(), 69)
+        );
+        assert_eq!(result.stdout(), &Bytes::from("stdout".to_string()));
+        assert_eq!(result.stderr(), &Bytes::from("stderr".to_string()));
+        assert_eq!(result.exit_status(), 69);
+        assert_eq!(result.state(), TestResultState::Pass);
+        assert_eq!(result.time_taken(), Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn test_handle_getters() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "world"])
+            .test("hello", "world", ())
+            .test("hello", "world", ())
+            .test("hello", "world", ())
+            .test("hello", "world", ())
+            .test("hello", "world", ())
+            .test("hello", "world", ())
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let mut runner = ctx.test_runner().compile_and_run().await.unwrap();
+        assert_eq!(runner.tests_left(), 6);
+        assert_eq!(runner.test_count(), 6);
+        assert_eq!(runner.compile_result(), None);
+        let _result = runner.wait_next().await.unwrap().unwrap();
+        assert_eq!(runner.tests_left(), 5);
+        assert_eq!(runner.test_count(), 6);
+        assert_eq!(runner.compile_result(), None);
+
+        let ctx = TestContext::builder()
+            .compile_command(["echo", "world"])
+            .run_command(["echo", "world"])
+            .test("", "world", ())
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let runner = ctx.test_runner().compile_and_run().await.unwrap();
+        assert!(runner.compile_result().is_some());
+    }
+
+    #[tokio::test]
+    async fn compile_result_getters() {
+        let ctx = TestContext::builder()
+            .compile_command(["echo", "hello"])
+            .run_command(["echo", "world"])
+            .test("hello", "world", ())
+            .build();
+        let ctx = Arc::new(ctx);
+
+        let runner = ctx.test_runner().compile().await.unwrap();
+        let result = runner.compile_result().unwrap();
+        assert_eq!(
+            result.output(),
+            &Output::new("hello\n".to_string(), "".to_string(), 0)
+        );
+        assert_eq!(result.stdout(), &Bytes::from("hello\n".to_string()));
+        assert!(result.stderr().is_empty());
+
+        let handle = runner.run();
+        let result = handle.compile_result().unwrap();
+        assert_eq!(result.stdout(), &Bytes::from("hello\n".to_string()));
+        assert!(result.stderr().is_empty());
+        dbg!(result.time_taken());
+        assert!(result.time_taken() > Duration::ZERO);
     }
 }

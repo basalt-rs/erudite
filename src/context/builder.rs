@@ -379,10 +379,10 @@ mod test {
         let ctx = TestContext::builder()
             .run_command(["echo", "foo"])
             .test("hello", "world", ())
-            .file(Path::new("./foo/bar.txt"), "/bar.txt")
+            .file(Path::new("./foo/bar.txt"), "/foo/bar.txt")
             .build();
 
-        assert_eq!(ctx.files[0].dest(), Path::new("bar.txt"));
+        assert_eq!(ctx.files[0].dest(), Path::new("foo/bar.txt"));
     }
 
     #[test]

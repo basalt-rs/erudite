@@ -111,7 +111,7 @@ mod test {
     fn bytes_from_string() {
         let string = "hello".to_string();
         let bytes = Bytes::from(string.clone());
-        assert!(matches!(bytes, Bytes::String(_)));
+        assert_eq!(bytes, Bytes::String(string.clone()));
         assert_eq!(bytes.bytes(), string.as_bytes());
         assert_eq!(bytes.as_str(), Some(&*string));
         assert_eq!(bytes.to_str_lossy(), string);
@@ -123,7 +123,7 @@ mod test {
     fn bytes_from_vec() {
         const BYTES: &[u8] = &[0xc3, 0x00, b'h', b'i'];
         let bytes = Bytes::from(BYTES.to_vec()); // not a valid string
-        assert!(matches!(bytes, Bytes::Bytes(_)));
+        assert_eq!(bytes, Bytes::Bytes(BYTES.to_vec()));
         assert_eq!(bytes.bytes(), BYTES);
         assert!(bytes.as_str().is_none());
         assert_eq!(bytes.to_str_lossy(), "�\0hi");
@@ -136,7 +136,7 @@ mod test {
         const STRING: &str = "hello";
         const BYTES: &[u8] = STRING.as_bytes();
         let bytes = Bytes::from(BYTES.to_vec());
-        assert!(matches!(bytes, Bytes::String(_)));
+        assert_eq!(bytes, Bytes::String(STRING.to_string()));
         assert_eq!(bytes.bytes(), BYTES);
         assert_eq!(bytes.as_str(), Some(STRING));
         assert_eq!(bytes.to_str_lossy(), STRING);

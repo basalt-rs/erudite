@@ -29,7 +29,7 @@ impl FileConfig {
             dest.to_path_buf()
         };
 
-        FileConfig {
+        Self {
             src: src.into(),
             dest,
         }
@@ -87,6 +87,12 @@ impl From<&Path> for FileContent {
 
 impl From<&[u8]> for FileContent {
     fn from(value: &[u8]) -> Self {
+        Self::bytes(value)
+    }
+}
+
+impl<const N: usize> From<&[u8; N]> for FileContent {
+    fn from(value: &[u8; N]) -> Self {
         Self::bytes(value)
     }
 }
@@ -309,6 +315,39 @@ mod test {
         let bytes = vec![0xca, 0xfe, 0xba, 0xbe];
         let content = FileContent::bytes(bytes.clone());
         assert_eq!(content, FileContent::Bytes(bytes));
+    }
+
+    #[test]
+    fn commandconfig_into() {
+        let mut cfg = CommandConfig::<&str>::default();
+
+        assert_eq!(cfg.into(), CommandConfig::<String>::None);
+
+        cfg.with_run("run");
+        assert_eq!(cfg.into(), CommandConfig::<String>::Run("run".to_string()));
+
+        cfg.with_compile("compile");
+        assert_eq!(
+            cfg.into(),
+            CommandConfig::<String>::Different {
+                run: "run".to_string(),
+                compile: "compile".to_string()
+            }
+        );
+
+        let mut cfg = CommandConfig::<&str>::default();
+
+        cfg.with_compile("compile");
+        assert_eq!(
+            cfg.into(),
+            CommandConfig::<String>::Compile("compile".to_string())
+        );
+
+        cfg.with_both("both");
+        assert_eq!(
+            cfg.into(),
+            CommandConfig::<String>::Equal("both".to_string())
+        );
     }
 
     #[test]
