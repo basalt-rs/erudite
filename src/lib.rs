@@ -1,4 +1,77 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![warn(missing_docs)]
+
+//! Erudite is an asynchronous test runner that can run a suites of tests in concurrently.
+//!
+//! There are a couple of key structures which make up Erudite:
+//!
+//! # [`TestContext`]
+//!
+//! A test context holds information about how a test suite should be run.  Information such as
+//! the commands needed to run the tests, the restrictions to apply to said commands, and the
+//! tests themselves are included in a test context.
+//!
+//! A test context is designed with the intention that it can be placed into an [`Arc`] and be used
+//! throughout the program, creating test runners, which can be used to run tests.
+//!
+//! # [`TestRunner`]
+//!
+//! A test runner is created from a test context and is used to run a test suite.  There are some
+//! additional configurations that can be added to the test runner for run-specific settings.  Once
+//! a runner has been created, it can compile and then run the tests, giving a handle to those
+//! tests.
+//!
+//! # [`TestHandle`]
+//!
+//! A test handle is a handle to an actively running suite of tests.  A test handle can wait for
+//! the tests to finish one at a time or for all of them to finish.  Test handles return
+//! [`TestResult`]s which contain information about the output of a test, the time it took, and
+//! whether that test passed.
+//!
+//! [`TestRunner`]: crate::runner::TestRunner
+//! [`TestHandle`]: crate::runner::TestHandle
+//! [`TestResult`]: crate::runner::TestResult
+//!
+//! # Usage
+//!
+//! ```no_run
+//! # // This test is also at tests/reverse.rs
+//! # use erudite::{TestContext, FileContent, BorrowedFileContent, Rules, MemorySize, runner::TestResultState};
+//! # use std::{sync::Arc, time::Duration, path::Path};
+//! #
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! #
+//! # let runner_code = include_str!("../tests/code/reverse-runner.rs");
+//! # let solution_code = include_str!("../tests/code/reverse-solution.rs");
+//!
+//! let context = TestContext::builder()
+//!     .compile_command(["rustc", "-o", "runner", "runner.rs"])
+//!     .run_command(["./runner"])
+//!     .test("hello", "olleh", ())
+//!     .test("world", "dlrow", ())
+//!     .test("rust", "tsur", ())
+//!     .test("tacocat", "tacocat", ())
+//!     .trim_output(true)
+//!     .file(FileContent::string(runner_code), "runner.rs")
+//!     .build();
+//!
+//! let context = Arc::new(context);
+//!
+//! let mut handle = context
+//!     .test_runner()
+//!     .file(BorrowedFileContent::string(solution_code), Path::new("solution.rs"))
+//!     .compile_and_run()
+//!     .await?;
+//!
+//! let results = handle.wait_all().await?;
+//!
+//! assert_eq!(results[0].state(), TestResultState::Pass);
+//!
+//! # Ok(())
+//! # }
+//! ```
+
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
@@ -10,7 +83,9 @@ pub use leucite::{MemorySize, Rules};
 use tokio::{io::AsyncRead, task::JoinSet};
 
 pub mod cases;
-pub mod context;
+// pub use because its api is small enough that it doesn't need to be exposed as another module
+pub(crate) mod context;
+pub use context::{TestContext, TestContextBuilder};
 pub mod error;
 pub mod runner;
 
@@ -19,11 +94,14 @@ pub mod runner;
 /// appropriate variant for the data.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Bytes {
+    /// Data contained within is a string
     String(String),
+    /// Data contained within is bytes, which are _not_ a string (checked on construction)
     Bytes(Vec<u8>),
 }
 
 impl Bytes {
+    /// Get the length of the underlying data, in bytes
     pub fn len(&self) -> usize {
         match self {
             Bytes::String(s) => s.len(),
@@ -31,6 +109,7 @@ impl Bytes {
         }
     }
 
+    /// Get whether this collection is empty
     pub fn is_empty(&self) -> bool {
         match self {
             Bytes::String(s) => s.is_empty(),
@@ -38,6 +117,7 @@ impl Bytes {
         }
     }
 
+    /// Get the bytes as a string.  If the bytes are not a valid string, returns `None`.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Bytes::String(s) => Some(s),
@@ -45,6 +125,9 @@ impl Bytes {
         }
     }
 
+    /// Convert this data to a string, replacing any non-utf8 characters with [`U+FFFD REPLACEMENT
+    /// CHARACTER`](https://doc.rust-lang.org/stable/core/char/constant.REPLACEMENT_CHARACTER.html)
+    /// (`�`)
     pub fn to_str_lossy(&self) -> Cow<'_, str> {
         match self {
             Bytes::String(ref s) => Cow::Borrowed(s),
@@ -52,6 +135,7 @@ impl Bytes {
         }
     }
 
+    /// Get the bytes stored as a slice
     pub fn bytes(&self) -> &[u8] {
         match self {
             Bytes::String(s) => s.as_bytes(),
@@ -67,6 +151,8 @@ impl From<String> for Bytes {
 }
 
 impl From<Vec<u8>> for Bytes {
+    /// Convert from a vector of bytes into [`Bytes`].  This will check the bytes to determine
+    /// whether it is a string.
     fn from(value: Vec<u8>) -> Self {
         String::from_utf8(value)
             .map(Self::String)
@@ -75,6 +161,8 @@ impl From<Vec<u8>> for Bytes {
     }
 }
 
+/// The output of a finished process, containing standard output, standard input, and the exit
+/// status
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Output {
     stdout: Bytes,
@@ -91,18 +179,22 @@ impl Output {
         }
     }
 
+    /// Get the standard output of this `Output`
     pub fn stdout(&self) -> &Bytes {
         &self.stdout
     }
 
+    /// Get the standard error of this `Output`
     pub fn stderr(&self) -> &Bytes {
         &self.stderr
     }
 
+    /// Get the exit status of this `Output`
     pub fn exit_status(&self) -> i32 {
         self.status
     }
 
+    /// Get whether this `Output` is a success (exit status == 0)
     pub fn success(&self) -> bool {
         self.status == 0
     }
@@ -148,6 +240,13 @@ pub struct FileConfig {
 }
 
 impl FileConfig {
+    /// Construct a new FileConfig
+    ///
+    /// If `src` is a path, the contents of that path will only be copied when tests are compiled.
+    /// If that is not the desired behaviour, use [`FileContent::bytes`] instead.
+    ///
+    /// If `dest` is an absolute path, it will be made relative.  (i.e., `/foo/bar` becomes
+    /// `foo/bar`)
     pub fn new(src: impl Into<FileContent>, dest: impl AsRef<Path>) -> Self {
         let dest = dest.as_ref();
         let dest = if dest.is_absolute() {
@@ -166,11 +265,13 @@ impl FileConfig {
         self.borrow().write_file(base).await
     }
 
+    /// Get the destination from this FileConfig
     pub fn dest(&self) -> &Path {
         &self.dest
     }
 
-    pub fn borrow<'a>(&'a self) -> BorrowedFileConfig<'a> {
+    /// Get a borrowed version of the file config
+    pub fn borrow(&self) -> BorrowedFileConfig<'_> {
         BorrowedFileConfig::from_owned(self)
     }
 }
@@ -254,6 +355,7 @@ impl FileContent {
     }
 }
 
+/// Configuration for how a file should be setup for test cases to be run
 #[derive(PartialEq, Debug)]
 pub struct BorrowedFileConfig<'a> {
     /// This path is relative to the temporary directory created while running tests
@@ -262,6 +364,13 @@ pub struct BorrowedFileConfig<'a> {
 }
 
 impl<'a> BorrowedFileConfig<'a> {
+    /// Construct a new [`BorrowedFileConfig`]
+    ///
+    /// If `src` is a path, the contents of that path will only be copied when tests are compiled.
+    /// If that is not the desired behaviour, use [`FileContent::bytes`] instead.
+    ///
+    /// If `dest` is an absolute path, it will be made relative.  (i.e., `/foo/bar` becomes
+    /// `foo/bar`)
     pub fn new(src: impl Into<BorrowedFileContent<'a>>, dest: &'a Path) -> Self {
         let dest = if dest.is_absolute() {
             dest.strip_prefix("/").unwrap()
@@ -275,6 +384,7 @@ impl<'a> BorrowedFileConfig<'a> {
         }
     }
 
+    /// Construct a new `BorrowedFileConfig` from an existing [`FileConfig`]
     pub fn from_owned(owned: &'a FileConfig) -> Self {
         BorrowedFileConfig {
             dest: owned.dest(),
@@ -282,6 +392,7 @@ impl<'a> BorrowedFileConfig<'a> {
         }
     }
 
+    /// Get the destination of this `BorrowedFileConfig`
     pub fn dest(&self) -> &Path {
         self.dest
     }
@@ -328,18 +439,18 @@ pub struct BorrowedFileContent<'a>(BorrowedFileContentInner<'a>);
 // NOTE: This enum is wrapped so that it can't be created directly by a consuming library
 #[derive(From, derive_more::Debug)]
 enum BorrowedFileContentInner<'a> {
-    /// Copies a file directly from this path
-    ///
-    /// NOTE: This happens when the tests are actually run.  If you want to load the file into
-    /// memory first, use [`Self::Bytes`].
     Path(&'a Path),
-    /// Creates a new file with this content
     Bytes(&'a [u8]),
+    // NOTE: we're using `dyn` here for two reasons:
+    // - We don't want to have to carry around a generic everywhere
+    // - We don't want to constrain the caller to use the same reader for every file.  That would
+    //   become a pain in the ass when reading from multiple sources.
     #[debug("Reader")]
     Reader(&'a mut dyn AsyncReadUnpin),
 }
 
 impl PartialEq for BorrowedFileContentInner<'_> {
+    // NOTE: This implementation exists primarily for tests
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (BorrowedFileContentInner::Path(a), BorrowedFileContentInner::Path(b)) => a == b,
@@ -356,7 +467,8 @@ impl PartialEq for BorrowedFileContentInner<'_> {
 }
 
 impl<'a> BorrowedFileContent<'a> {
-    fn from_owned(owned: &'a FileContent) -> Self {
+    /// Construct a new `BorrowedFileContent` from an existing [`FileContent`]
+    pub fn from_owned(owned: &'a FileContent) -> Self {
         match owned {
             FileContent::Path(path) => Self::path(path),
             FileContent::Bytes(bytes) => Self::bytes(bytes),
@@ -366,7 +478,7 @@ impl<'a> BorrowedFileContent<'a> {
     /// Copy the file directly from this path on the host machine
     ///
     /// Note: The copy happens when tests are compiled.  If you want to load the file into memory
-    /// first, use [`TestFileContent::bytes`].
+    /// first, use [`BorrowedFileContent::bytes`].
     pub fn path(path: &'a Path) -> Self {
         Self(BorrowedFileContentInner::Path(path))
     }

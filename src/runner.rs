@@ -1,3 +1,5 @@
+//! Definitions and functions related to the execution of test suites
+
 use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -19,9 +21,9 @@ use tracing::{debug, debug_span, instrument, trace, Instrument};
 
 use crate::{
     cases::TestCase,
-    context::{CommandConfig, TestContext},
+    context::StageConfig,
     error::{CompileError, CreateFilesError, SpawnTestError},
-    BorrowedFileConfig, BorrowedFileContent, Bytes, Output,
+    BorrowedFileConfig, BorrowedFileContent, Bytes, Output, TestContext,
 };
 
 /// Parse a command from argv.  `argv[0]` is the program, `argv[1..]` is the args.
@@ -144,7 +146,7 @@ async fn wait_with_output_and_timeout(
 ///
 /// ```no_run
 /// # use std::{path::Path, sync::Arc};
-/// # use erudite::context::TestContext;
+/// # use erudite::TestContext;
 /// # #[derive(Clone)]
 /// # struct Data { visible: bool }
 /// # #[tokio::main]
@@ -335,18 +337,17 @@ where
     // returns (compile rules, run rules)
     fn create_rules(&self, cwd: &Path) -> (Option<Arc<Rules>>, Option<Arc<Rules>>) {
         let modify_rules = |rules: Rules| -> Rules { rules.clone().add_read_write(cwd) };
-        dbg!(&self.context.rules);
         match &self.context.rules {
-            CommandConfig::None => (None, None),
-            CommandConfig::Compile(ref r) => (Some(Arc::new(modify_rules(r.clone()))), None),
-            CommandConfig::Run(ref r) => (None, Some(Arc::new(modify_rules(r.clone())))),
-            CommandConfig::Equal(ref r) => {
+            StageConfig::None => (None, None),
+            StageConfig::Compile(ref r) => (Some(Arc::new(modify_rules(r.clone()))), None),
+            StageConfig::Run(ref r) => (None, Some(Arc::new(modify_rules(r.clone())))),
+            StageConfig::Equal(ref r) => {
                 // Done this way to only create once instance of the rules and just Arc::clone it
                 let r = modify_rules(r.clone());
                 let r = Arc::new(r);
                 (Some(Arc::clone(&r)), Some(r))
             }
-            CommandConfig::Different { compile, run } => (
+            StageConfig::Different { compile, run } => (
                 Some(Arc::new(modify_rules(compile.clone()))),
                 Some(Arc::new(modify_rules(run.clone()))),
             ),
@@ -362,7 +363,7 @@ where
     ///
     /// ```no_run
     /// # use std::{path::Path, sync::Arc};
-    /// # use erudite::context::TestContext;
+    /// # use erudite::TestContext;
     /// # #[derive(Clone)]
     /// # struct Data { visible: bool }
     /// # #[tokio::main]
@@ -445,7 +446,7 @@ where
     ///
     /// ```no_run
     /// # use std::{path::Path, sync::Arc};
-    /// # use erudite::context::TestContext;
+    /// # use erudite::TestContext;
     /// # #[derive(Clone)]
     /// # struct Data { visible: bool }
     /// # #[tokio::main]
@@ -518,7 +519,7 @@ where
         let (output, timed_out) = wait_with_output_and_timeout(
             &mut child,
             context.timeout.run().copied(),
-            Some(&case.input),
+            Some(case.input()),
         )
         .await
         .map_err(SpawnTestError::WaitFail)?;
@@ -546,7 +547,7 @@ where
         };
         Ok(TestResult {
             index,
-            data: Some(case.data),
+            data: Some(case.into_data()),
             output,
             state,
             time_taken,
@@ -562,16 +563,16 @@ where
                 .test_filter
                 .is_some_and(|filter| !filter(case))
             {
-                trace!(?case.input, ?case.output, "Skipping test");
+                trace!(input = ?case.input(), output = ?case.output(), "Skipping test");
                 continue;
             }
 
             let case = case.clone();
             const MAX_LEN: usize = 10;
-            let input = if case.input.len() > MAX_LEN {
-                &format!("{}…", &case.input[..MAX_LEN])
+            let input = if case.input().len() > MAX_LEN {
+                &format!("{}…", &case.input()[..MAX_LEN])
             } else {
-                &case.input
+                case.input()
             };
             let span = debug_span!("run_test", index = i, ?input);
             let context = Arc::clone(&self.test_runner.context);
@@ -591,7 +592,7 @@ where
     ///
     /// ```no_run
     /// # use std::{path::Path, sync::Arc};
-    /// # use erudite::context::TestContext;
+    /// # use erudite::TestContext;
     /// # #[derive(Clone)]
     /// # struct Data { visible: bool }
     /// # #[tokio::main]
@@ -624,6 +625,7 @@ where
             joinset: tests,
             test_count,
             compile_result: self.compile_result,
+            cwd: self.cwd,
             _tmpdir: self.tmpdir,
         }
     }
@@ -712,6 +714,7 @@ pub struct TestHandle<T> {
     joinset: JoinSet<Result<TestResult<T>, SpawnTestError>>,
     test_count: usize,
     compile_result: Option<CompileResult>,
+    cwd: PathBuf,
     /// Needed to remove the temp dir when we're done
     _tmpdir: Option<TmpDir>,
 }
@@ -732,6 +735,11 @@ impl<T> TestHandle<T> {
     /// if the tests did not need a compile step.
     pub fn compile_result(&self) -> Option<&CompileResult> {
         self.compile_result.as_ref()
+    }
+
+    /// Get the directory in which the tests are being run
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
     }
 }
 
@@ -827,9 +835,8 @@ mod test {
     use tmpdir::TmpDir;
 
     use crate::{
-        context::TestContext,
         runner::{BorrowedFileConfig, BorrowedFileContent, TestResult, TestResultState},
-        Bytes, Output,
+        Bytes, Output, TestContext,
     };
 
     #[tokio::test]

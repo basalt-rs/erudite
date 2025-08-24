@@ -1,6 +1,6 @@
 use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
-use erudite::{context::TestContext, BorrowedFileContent};
+use erudite::{BorrowedFileContent, TestContext};
 use leucite::Rules;
 use regex::Regex;
 use tracing::info;

@@ -3,7 +3,7 @@ use crate::{
     FileContent,
 };
 
-use super::{CommandConfig, FileConfig, TestContext};
+use super::{FileConfig, StageConfig, TestContext};
 use std::{marker::PhantomData, path::Path, time::Duration};
 
 use leucite::{MemorySize, Rules};
@@ -40,7 +40,7 @@ use hidden::*;
 /// # Usage
 ///
 /// ```
-/// # use erudite::{context::TestContext, FileContent, Rules, MemorySize};
+/// # use erudite::{TestContext, FileContent, Rules, MemorySize};
 /// # use std::time::Duration;
 /// # let rules = Rules::new();
 /// let context = TestContext::builder()
@@ -62,15 +62,15 @@ use hidden::*;
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct TestContextBuilder<T, Tests = MissingTests, RunCmd = MissingRunCmd> {
-    command: CommandConfig<Vec<String>>, // Compile: optional, Run: required
-    test_cases: Vec<TestCase<T>>,        // required (at least once)
-    trim_output: bool,                   // optional
-    files: Vec<FileConfig>,              // optional
-    timeout: CommandConfig<Duration>,    // optional
-    rules: CommandConfig<Rules>,         // optional
-    max_memory: CommandConfig<MemorySize>, // optional
-    max_file_size: CommandConfig<MemorySize>, // optional
-    max_threads: CommandConfig<u64>,     // optional
+    command: StageConfig<Vec<String>>, // Compile: optional, Run: required
+    test_cases: Vec<TestCase<T>>,      // required (at least once)
+    trim_output: bool,                 // optional
+    files: Vec<FileConfig>,            // optional
+    timeout: StageConfig<Duration>,    // optional
+    rules: StageConfig<Rules>,         // optional
+    max_memory: StageConfig<MemorySize>, // optional
+    max_file_size: StageConfig<MemorySize>, // optional
+    max_threads: StageConfig<u64>,     // optional
 
     state: PhantomData<(Tests, RunCmd)>,
 }
@@ -146,7 +146,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// Default = `false`
     ///
     /// ```
-    /// # use erudite::context::TestContext;
+    /// # use erudite::TestContext;
     /// let ctx = TestContext::builder()
     ///     .compile_command(["gcc", "-o", "solution", "solution.c"])
     ///     .run_command(["solution.c"])
@@ -168,7 +168,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// [`TestRunner::compile`]: crate::runner::TestRunner::compile
     ///
     /// ```
-    /// # use erudite::{FileContent, context::TestContext};
+    /// # use erudite::{FileContent, TestContext};
     /// let ctx = TestContext::builder()
     ///     .compile_command(["gcc", "-o", "solution", "solution.c"])
     ///     .run_command(["solution.c"])
@@ -199,7 +199,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// `/foo/bar` -> `<test-env>/foo/bar`.
     ///
     /// ```
-    /// # use erudite::{FileContent, context::TestContext};
+    /// # use erudite::{FileContent, TestContext};
     /// let ctx = TestContext::builder()
     ///     .run_command(["node", "solution.js"])
     ///     .test("hello world", "dlrow olleh", true)
@@ -227,7 +227,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// `/foo/bar` -> `<test-env>/foo/bar`.
     ///
     /// ```
-    /// # use erudite::{FileContent, FileConfig, context::TestContext};
+    /// # use erudite::{FileContent, FileConfig, TestContext};
     /// let ctx = TestContext::builder()
     ///     .run_command(["node", "solution.js"])
     ///     .test("hello world", "dlrow olleh", true)
@@ -259,7 +259,7 @@ impl<T, Tests> TestContextBuilder<T, Tests, MissingRunCmd> {
     /// [`TestHandle::wait_next`]: crate::runner::TestHandle::wait_next
     ///
     /// ```
-    /// # use erudite::context::TestContext;
+    /// # use erudite::TestContext;
     /// let ctx = TestContext::builder()
     ///     .run_command(["node", "solution.js"])
     ///     .test("hello world", "dlrow olleh", true)
@@ -292,7 +292,7 @@ where
     /// [`TestResult::data`]: crate::runner::TestResult::data
     ///
     /// ```
-    /// # use erudite::context::TestContext;
+    /// # use erudite::TestContext;
     /// let ctx: TestContext<bool> = TestContext::builder()
     ///     .run_command(["echo", "hi"])
     ///     .test("hello world", "dlrow olleh", true)
@@ -313,7 +313,7 @@ where
     /// See [`Self::test`] for additional information.
     ///
     /// ```
-    /// # use erudite::context::TestContext;
+    /// # use erudite::TestContext;
     /// let ctx: TestContext<bool> = TestContext::builder()
     ///     .run_command(["echo", "hi"])
     ///     .tests([
@@ -359,7 +359,7 @@ mod test {
 
     use leucite::{MemorySize, Rules};
 
-    use crate::{cases::ExpectedOutput, context::TestContext};
+    use crate::{cases::ExpectedOutput, TestContext};
 
     #[test]
     fn minimal_builder() {
@@ -497,14 +497,14 @@ mod test {
     ///
     /// No run method or tests
     /// ```compile_fail
-    /// use erudite::context::TestContext;
+    /// use erudite::TestContext;
     /// let context = TestContext::builder()
     ///     .build();
     /// ```
     ///
     /// One test, but no run method
     /// ```compile_fail
-    /// use erudite::context::TestContext;
+    /// use erudite::TestContext;
     /// let context = TestContext::builder()
     ///     .test("foo", "bar", ())
     ///     .build();
@@ -512,7 +512,7 @@ mod test {
     ///
     /// Many tests, but no run method
     /// ```compile_fail
-    /// use erudite::context::TestContext;
+    /// use erudite::TestContext;
     /// let context = TestContext::builder()
     ///     .test("foo", "bar", ())
     ///     .test("foo", "bar", ())
@@ -522,7 +522,7 @@ mod test {
     ///
     /// One test using `.tests`, but no run method
     /// ```compile_fail
-    /// use erudite::context::TestContext;
+    /// use erudite::TestContext;
     /// let context = TestContext::builder()
     ///     .tests([("foo", "bar", ())])
     ///     .build();
@@ -530,7 +530,7 @@ mod test {
     ///
     /// Many tests using `.tests`, but no run method
     /// ```compile_fail
-    /// use erudite::context::TestContext;
+    /// use erudite::TestContext;
     /// let context = TestContext::builder()
     ///     .tests([("foo", "bar", ()), ("baz", "qux", ())])
     ///     .build();
@@ -538,7 +538,7 @@ mod test {
     ///
     /// Run method, but no tests
     /// ```compile_fail
-    /// use erudite::context::TestContext;
+    /// use erudite::TestContext;
     /// let context = TestContext::builder()
     ///     .run_command(["rustc", "-o", "solution", "solution.rs"])
     ///     .build();

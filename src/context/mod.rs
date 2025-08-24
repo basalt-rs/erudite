@@ -9,7 +9,7 @@ use crate::{cases::TestCase, runner::TestRunner, FileConfig};
 
 // TODO: rename (and update test names)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CommandConfig<T> {
+pub(crate) enum StageConfig<T> {
     None,
     Compile(T),
     Run(T),
@@ -17,24 +17,24 @@ pub(crate) enum CommandConfig<T> {
     Different { compile: T, run: T },
 }
 
-impl<T> Default for CommandConfig<T> {
+impl<T> Default for StageConfig<T> {
     fn default() -> Self {
         Self::None
     }
 }
 
-impl<T> CommandConfig<T> {
+impl<T> StageConfig<T> {
     // Can't use From/Into traits because T might be the same as U
-    pub fn into<U>(self) -> CommandConfig<U>
+    pub fn into<U>(self) -> StageConfig<U>
     where
         U: From<T>,
     {
         match self {
-            CommandConfig::None => CommandConfig::None,
-            CommandConfig::Compile(c) => CommandConfig::Compile(c.into()),
-            CommandConfig::Run(r) => CommandConfig::Run(r.into()),
-            CommandConfig::Equal(t) => CommandConfig::Equal(t.into()),
-            CommandConfig::Different { compile, run } => CommandConfig::Different {
+            StageConfig::None => StageConfig::None,
+            StageConfig::Compile(c) => StageConfig::Compile(c.into()),
+            StageConfig::Run(r) => StageConfig::Run(r.into()),
+            StageConfig::Equal(t) => StageConfig::Equal(t.into()),
+            StageConfig::Different { compile, run } => StageConfig::Different {
                 compile: compile.into(),
                 run: run.into(),
             },
@@ -72,36 +72,66 @@ impl<T> CommandConfig<T> {
 
     pub fn compile(&self) -> Option<&T> {
         match self {
-            CommandConfig::None => None,
-            CommandConfig::Compile(c) => Some(c),
-            CommandConfig::Run(_) => None,
-            CommandConfig::Equal(c) => Some(c),
-            CommandConfig::Different { compile, run: _ } => Some(compile),
+            StageConfig::None => None,
+            StageConfig::Compile(c) => Some(c),
+            StageConfig::Run(_) => None,
+            StageConfig::Equal(c) => Some(c),
+            StageConfig::Different { compile, run: _ } => Some(compile),
         }
     }
 
     pub fn run(&self) -> Option<&T> {
         match self {
-            CommandConfig::None => None,
-            CommandConfig::Compile(_) => None,
-            CommandConfig::Run(r) => Some(r),
-            CommandConfig::Equal(r) => Some(r),
-            CommandConfig::Different { compile: _, run } => Some(run),
+            StageConfig::None => None,
+            StageConfig::Compile(_) => None,
+            StageConfig::Run(r) => Some(r),
+            StageConfig::Equal(r) => Some(r),
+            StageConfig::Different { compile: _, run } => Some(run),
         }
     }
 }
 
+/// Context around a test suite.  This contains information about how a test suite is supposed to
+/// be run.
+///
+/// The idea is that this can be placed into an [`Arc`] within the application state and runners
+/// can be created from any thread using [`TestContext::test_runner`].
+///
+/// # Usage
+///
+/// Construct one using [`TestContext::builder`]:
+///
+/// ```
+/// # use erudite::{TestContext, FileContent, Rules, MemorySize};
+/// # use std::time::Duration;
+/// # let rules = Rules::new();
+/// let context = TestContext::builder()
+///     .compile_command(["rustc", "-o", "main", "main.rs"])
+///     .run_command(["./main"])
+///     .test("hello", "olleh", ())
+///     .test("world", "dlrow", ())
+///     .test("rust", "tsur", ())
+///     .test("tacocat", "tacocat", ())
+///     .trim_output(true)
+///     .file(FileContent::string("// some rust code"), "main.rs")
+///     .timeout(Duration::from_secs(5))
+///     .rules(rules)
+///     .max_memory(MemorySize::from_gib(1))
+///     .max_file_size(MemorySize::from_gib(1))
+///     .max_threads(2)
+///     .build();
+/// ```
 #[derive(Debug, Clone)]
 pub struct TestContext<T> {
     pub(crate) trim_output: bool,
     pub(crate) files: Vec<FileConfig>,
     pub(crate) test_cases: Vec<TestCase<T>>,
-    pub(crate) command: CommandConfig<Box<[String]>>,
-    pub(crate) timeout: CommandConfig<Duration>,
-    pub(crate) rules: CommandConfig<Rules>,
-    pub(crate) max_memory: CommandConfig<MemorySize>,
-    pub(crate) max_file_size: CommandConfig<MemorySize>,
-    pub(crate) max_threads: CommandConfig<u64>,
+    pub(crate) command: StageConfig<Box<[String]>>,
+    pub(crate) timeout: StageConfig<Duration>,
+    pub(crate) rules: StageConfig<Rules>,
+    pub(crate) max_memory: StageConfig<MemorySize>,
+    pub(crate) max_file_size: StageConfig<MemorySize>,
+    pub(crate) max_threads: StageConfig<u64>,
 }
 
 impl<T> TestContext<T> {
@@ -126,7 +156,7 @@ mod test {
     use tmpdir::TmpDir;
 
     use crate::{
-        context::{CommandConfig, FileConfig},
+        context::{FileConfig, StageConfig},
         FileContent,
     };
 
@@ -225,41 +255,38 @@ mod test {
     }
 
     #[test]
-    fn commandconfig_into() {
-        let mut cfg = CommandConfig::<&str>::default();
+    fn stage_config_into() {
+        let mut cfg = StageConfig::<&str>::default();
 
-        assert_eq!(cfg.into(), CommandConfig::<String>::None);
+        assert_eq!(cfg.into(), StageConfig::<String>::None);
 
         cfg.with_run("run");
-        assert_eq!(cfg.into(), CommandConfig::<String>::Run("run".to_string()));
+        assert_eq!(cfg.into(), StageConfig::<String>::Run("run".to_string()));
 
         cfg.with_compile("compile");
         assert_eq!(
             cfg.into(),
-            CommandConfig::<String>::Different {
+            StageConfig::<String>::Different {
                 run: "run".to_string(),
                 compile: "compile".to_string()
             }
         );
 
-        let mut cfg = CommandConfig::<&str>::default();
+        let mut cfg = StageConfig::<&str>::default();
 
         cfg.with_compile("compile");
         assert_eq!(
             cfg.into(),
-            CommandConfig::<String>::Compile("compile".to_string())
+            StageConfig::<String>::Compile("compile".to_string())
         );
 
         cfg.with_both("both");
-        assert_eq!(
-            cfg.into(),
-            CommandConfig::<String>::Equal("both".to_string())
-        );
+        assert_eq!(cfg.into(), StageConfig::<String>::Equal("both".to_string()));
     }
 
     #[test]
-    fn commandconfig_run_only() {
-        let mut cfg = CommandConfig::default();
+    fn stage_config_run_only() {
+        let mut cfg = StageConfig::default();
 
         cfg.with_run(42);
         assert_eq!(cfg.run(), Some(&42));
@@ -280,8 +307,8 @@ mod test {
     }
 
     #[test]
-    fn commandconfig_compile_only() {
-        let mut cfg = CommandConfig::default();
+    fn stage_config_compile_only() {
+        let mut cfg = StageConfig::default();
 
         cfg.with_compile(42);
         assert_eq!(cfg.run(), None);
@@ -302,8 +329,8 @@ mod test {
     }
 
     #[test]
-    fn commandconfig_equal() {
-        let mut cfg = CommandConfig::default();
+    fn stage_config_equal() {
+        let mut cfg = StageConfig::default();
 
         cfg.with_both(AtomicI32::new(0));
         assert_eq!(cfg.run().map(|x| x.load(Ordering::SeqCst)), Some(0));
@@ -328,8 +355,8 @@ mod test {
     }
 
     #[test]
-    fn commandconfig_different() {
-        let mut cfg = CommandConfig::default();
+    fn stage_config_different() {
+        let mut cfg = StageConfig::default();
         let rval = AtomicI32::new(4);
         let cval = AtomicI32::new(2);
         cfg.with_run(rval).with_compile(cval);

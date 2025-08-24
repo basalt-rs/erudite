@@ -1,6 +1,6 @@
 use std::{error::Error, sync::Arc};
 
-use erudite::{context::TestContext, error::CompileError, runner::TestResultState};
+use erudite::{error::CompileError, runner::TestResultState, TestContext};
 use regex::Regex;
 
 const COMMANDS_SOLUTION: &str = include_str!("./code/commands.rs");

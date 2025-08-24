@@ -1,10 +1,22 @@
+//! Test Cases
+//!
+//! Definitions related to constructing and validating test cases
 use derive_more::From;
 
+/// Output that is expected from a test
+///
+/// If the `regex` feature is enabled, this can also match regular expressions
 #[derive(Debug, Clone, From)]
 pub enum ExpectedOutput {
-    String(#[from] String),
+    /// Match a case-sensitive string
+    #[from]
+    String(String),
+    /// Match a case-insensitive string
+    StringInsensitive(String),
+    /// Match a regular expression if the `regex` feature is enabled
     #[cfg(feature = "regex")]
-    Regex(#[from] regex::Regex),
+    #[from]
+    Regex(regex::Regex),
 }
 
 impl From<&str> for ExpectedOutput {
@@ -17,24 +29,22 @@ impl PartialEq for ExpectedOutput {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (ExpectedOutput::String(s), ExpectedOutput::String(o)) => s == o,
-            #[cfg(feature = "regex")]
-            (ExpectedOutput::String(_), ExpectedOutput::Regex(_)) => false,
-            #[cfg(feature = "regex")]
-            (ExpectedOutput::Regex(_), ExpectedOutput::String(_)) => false,
-            // NOTE: this is not completely correct, as two different strings can match the same
-            // pattern, i.e., `..*` and `.+`, but it's good enough
+            (ExpectedOutput::StringInsensitive(s), ExpectedOutput::StringInsensitive(o)) => s == o,
+            // NOTE: this is a little weird, as two different regex strings can match the same
+            // patterns, i.e., `..*` and `.+`, but it's good enough
             #[cfg(feature = "regex")]
             (ExpectedOutput::Regex(s), ExpectedOutput::Regex(o)) => s.as_str() == o.as_str(),
+            _ => false,
         }
     }
 }
 
-impl Eq for ExpectedOutput {}
-
 impl ExpectedOutput {
-    pub(crate) fn is_valid(&self, output: &str) -> bool {
+    /// Check whether a given string matches this expected output
+    pub fn is_valid(&self, output: &str) -> bool {
         match self {
             Self::String(ref s) => s == output,
+            Self::StringInsensitive(ref s) => s.eq_ignore_ascii_case(output),
             #[cfg(feature = "regex")]
             Self::Regex(ref reg) => reg.is_match(output),
         }
@@ -42,14 +52,20 @@ impl ExpectedOutput {
 }
 
 /// A test case which contains input, output, and some associated data
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TestCase<T = ()> {
-    pub(crate) input: String,
-    pub(crate) output: ExpectedOutput,
-    pub(crate) data: T,
+    input: String,
+    output: ExpectedOutput,
+    data: T,
 }
 
 impl<T> TestCase<T> {
+    /// Construct a new test case
+    ///
+    /// If using [`TestContextBuilder`], consider using the from implementation for `(I, O)` or
+    /// `(I, O, T)` tuples.
+    ///
+    /// [`TestContextBuilder`]: crate::context::TestContextBuilder
     pub fn new(input: impl Into<String>, output: impl Into<ExpectedOutput>, data: T) -> Self {
         Self {
             input: input.into(),
@@ -75,7 +91,7 @@ impl<T> TestCase<T> {
         &self.data
     }
 
-    /// Get the owned data assocated with this test case
+    /// Get the owned data of this test case, consuming the case
     ///
     /// See also: [`TestCase::data`]
     pub fn into_data(self) -> T {

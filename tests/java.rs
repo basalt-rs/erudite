@@ -1,10 +1,9 @@
 use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
 use erudite::{
-    context::TestContext,
     error::CompileError,
     runner::{CompileResultState, TestResultState},
-    BorrowedFileContent,
+    BorrowedFileContent, TestContext,
 };
 use leucite::{MemorySize, Rules};
 

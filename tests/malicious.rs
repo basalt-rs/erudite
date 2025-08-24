@@ -1,6 +1,6 @@
 use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
-use erudite::{context::TestContext, runner::TestResultState, BorrowedFileContent};
+use erudite::{runner::TestResultState, BorrowedFileContent, TestContext};
 use leucite::Rules;
 
 #[tokio::test]
