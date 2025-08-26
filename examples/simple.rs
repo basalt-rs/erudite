@@ -35,32 +35,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     dbg!(&context);
 
-    let compiled = Arc::new(context)
-        .test_runner(&"test_group")
-        .expect("just added test_group")
-        .file(
-            BorrowedFileContent::string(include_str!("./solution.rs")),
-            Path::new("./solution.rs"),
-        )
-        .filter_tests(|test| *test.data())
-        .compile()
-        .await?;
+    let context = Arc::new(context);
+    tokio::spawn(async move {
+        let compiled = context
+            .test_runner(&"test_group")
+            .expect("just added test_group")
+            .file(
+                BorrowedFileContent::string(include_str!("./solution.rs")),
+                Path::new("./solution.rs"),
+            )
+            .filter_tests(|test| *test.data())
+            .compile()
+            .await
+            .unwrap();
 
-    let compile_output = compiled.compile_result();
+        let compile_output = compiled.compile_result();
 
-    dbg!(compile_output);
+        dbg!(compile_output);
 
-    if let Some(compile_output) = compile_output {
-        eprintln!("STDOUT:\n{}", compile_output.stdout().to_str_lossy());
-        eprintln!("STDERR:\n{}", compile_output.stderr().to_str_lossy());
-        eprintln!("STATUS: {}", compile_output.exit_status());
-    }
+        if let Some(compile_output) = compile_output {
+            eprintln!("STDOUT:\n{}", compile_output.stdout().to_str_lossy());
+            eprintln!("STDERR:\n{}", compile_output.stderr().to_str_lossy());
+            eprintln!("STATUS: {}", compile_output.exit_status());
+        }
 
-    let mut tests = compiled.run();
+        let mut tests = compiled.run();
 
-    while let Some(test) = tests.wait_next().await? {
-        info!("tests[{}] = {:?}", test.index(), test);
-    }
+        while let Some(test) = tests.wait_next().await.unwrap() {
+            info!("tests[{}] = {:?}", test.index(), test);
+        }
+    });
 
     Ok(())
 }

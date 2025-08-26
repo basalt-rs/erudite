@@ -205,7 +205,7 @@ impl Output {
     }
 }
 
-// NOTE: For some reason, when using `async fn`, the returned future is not `Send`.
+// NOTE: For some reason, when using `async `, the returned future is not `Send`.
 #[allow(clippy::manual_async_fn)]
 fn copy_dir_recursive(
     src: impl Into<PathBuf>,
@@ -435,8 +435,8 @@ where
 
 /// A trait which is added to all [`AsyncRead`] + [`Unpin`]
 #[doc(hidden)]
-pub trait AsyncReadUnpin: AsyncRead + Unpin {}
-impl<T> AsyncReadUnpin for T where T: AsyncRead + Unpin {}
+pub trait AsyncReadUnpin: AsyncRead + Unpin + Send {}
+impl<T> AsyncReadUnpin for T where T: AsyncRead + Unpin + Send {}
 
 /// Some form of content that will be used to create a file when a test is compiled
 #[derive(From, PartialEq, Debug)]
@@ -499,7 +499,7 @@ impl<'a> BorrowedFileContent<'a> {
     }
 
     /// Copy from this reader into the file
-    pub fn reader<R: AsyncRead + Unpin>(r: &'a mut R) -> Self {
+    pub fn reader<R: AsyncRead + Unpin + Send>(r: &'a mut R) -> Self {
         Self(BorrowedFileContentInner::Reader(r))
     }
 }
