@@ -15,10 +15,10 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
         .add_read_only("/bin");
 
     let context = TestContext::builder()
-        .test("hello", "olleh", ())
-        .test("hello world", "dlrow olleh", ())
-        .test("foo bar 2", "2 rab oof", ())
-        .test("", "", ())
+        .test((), "hello", "olleh", ())
+        .test((), "hello world", "dlrow olleh", ())
+        .test((), "foo bar 2", "2 rab oof", ())
+        .test((), "", "", ())
         .compile_command(["javac", "Solution.java"])
         .run_command(["java", "Solution"])
         .rules(rules)
@@ -31,7 +31,7 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
     let context = Arc::new(context);
 
     let compiled = context
-        .test_runner()
+        .default_test_runner()
         .file(
             BorrowedFileContent::string(include_str!("./Solution.java")),
             Path::new("Solution.java"),
@@ -76,10 +76,10 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
         .add_read_only("/bin");
 
     let context = TestContext::builder()
-        .test("hello", "olleh", ())
-        .test("hello world", "dlrow olleh", ())
-        .test("foo bar 2", "2 rab oof", ())
-        .test("", "", ())
+        .test((), "hello", "olleh", ())
+        .test((), "hello world", "dlrow olleh", ())
+        .test((), "foo bar 2", "2 rab oof", ())
+        .test((), "", "", ())
         .compile_command(["javac", "Solution404.java"])
         .run_command(["java", "Solution"])
         .rules(rules)
@@ -91,7 +91,7 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
     let context = Arc::new(context);
 
     let compiled = context
-        .test_runner()
+        .default_test_runner()
         .file(
             BorrowedFileContent::string(include_str!("./Solution.java")),
             Path::new("Solution.java"),

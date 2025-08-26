@@ -4,7 +4,7 @@ use crate::{
 };
 
 use super::{FileConfig, StageConfig, TestContext};
-use std::{marker::PhantomData, path::Path, time::Duration};
+use std::{collections::HashMap, hash::Hash, marker::PhantomData, path::Path, time::Duration};
 
 use leucite::{MemorySize, Rules};
 
@@ -46,10 +46,10 @@ use hidden::*;
 /// let context = TestContext::builder()
 ///     .compile_command(["rustc", "-o", "main", "main.rs"])
 ///     .run_command(["./main"])   // Run command is always required
-///     .test("hello", "olleh", 1) // At least one test is required
-///     .test("world", "dlrow", 2)
-///     .test("rust", "tsur", 3)
-///     .test("tacocat", "tacocat", 4)
+///     .test("group", "hello", "olleh", 1) // At least one test is required
+///     .test("group", "world", "dlrow", 2)
+///     .test("group", "rust", "tsur", 3)
+///     .test("group", "tacocat", "tacocat", 4)
 ///     .trim_output(true)
 ///     .file(FileContent::string("// some rust code"), "main.rs")
 ///     .timeout(Duration::from_secs(5))        // or `run_timeout`/`compile_timeout`
@@ -61,9 +61,9 @@ use hidden::*;
 /// ```
 #[derive(Debug, Clone)]
 #[must_use]
-pub struct TestContextBuilder<T, Tests = MissingTests, RunCmd = MissingRunCmd> {
+pub struct TestContextBuilder<G, T, Tests = MissingTests, RunCmd = MissingRunCmd> {
     command: StageConfig<Vec<String>>, // Compile: optional, Run: required
-    test_cases: Vec<TestCase<T>>,      // required (at least once)
+    test_cases: HashMap<G, Vec<TestCase<T>>>, // required (at least once)
     trim_output: bool,                 // optional
     files: Vec<FileConfig>,            // optional
     timeout: StageConfig<Duration>,    // optional
@@ -75,12 +75,12 @@ pub struct TestContextBuilder<T, Tests = MissingTests, RunCmd = MissingRunCmd> {
     state: PhantomData<(Tests, RunCmd)>,
 }
 
-impl<T> TestContextBuilder<T, MissingTests, MissingRunCmd> {
+impl<G, T> TestContextBuilder<G, T, MissingTests, MissingRunCmd> {
     // Construction of this type should only be done with [`TestContext::builder`].
     pub(crate) fn new() -> Self {
         Self {
             trim_output: false,
-            test_cases: Vec::new(),
+            test_cases: Default::default(),
             files: Vec::new(),
             command: Default::default(),
             timeout: Default::default(),
@@ -93,11 +93,11 @@ impl<T> TestContextBuilder<T, MissingTests, MissingRunCmd> {
     }
 }
 
-impl<T, A, B> TestContextBuilder<T, A, B> {
-    /// Convert a TestContextBuilder<T, A, B> into TestContextBuilder<T, C, D>
+impl<G, T, A, B> TestContextBuilder<G, T, A, B> {
+    /// Convert a TestContextBuilder<G, T, A, B> into TestContextBuilder<G, T, C, D>
     // NOTE: This function _must not_ be made public in any way, or the type-state builder can be
     // invalidated.
-    fn transform<C, D>(self) -> TestContextBuilder<T, C, D> {
+    fn transform<C, D>(self) -> TestContextBuilder<G, T, C, D> {
         TestContextBuilder {
             test_cases: self.test_cases,
             trim_output: self.trim_output,
@@ -139,7 +139,7 @@ macro_rules! command_config_fns {
 }
 
 // Optional fields
-impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
+impl<G, T, Tests, RunCmd> TestContextBuilder<G, T, Tests, RunCmd> {
     /// Set whether the tests should trim the output of the program before testing (using
     /// [`str::trim`])
     ///
@@ -150,7 +150,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// let ctx = TestContext::builder()
     ///     .compile_command(["gcc", "-o", "solution", "solution.c"])
     ///     .run_command(["solution.c"])
-    ///     .test("hello world", "dlrow olleh", true)
+    ///     .test("group", "hello world", "dlrow olleh", true)
     ///     .trim_output(true)
     ///     .build();
     /// ```
@@ -172,7 +172,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// let ctx = TestContext::builder()
     ///     .compile_command(["gcc", "-o", "solution", "solution.c"])
     ///     .run_command(["solution.c"])
-    ///     .test("hello world", "dlrow olleh", true)
+    ///     .test("group", "hello world", "dlrow olleh", true)
     ///     .build();
     /// ```
     pub fn compile_command(
@@ -202,7 +202,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// # use erudite::{FileContent, TestContext};
     /// let ctx = TestContext::builder()
     ///     .run_command(["node", "solution.js"])
-    ///     .test("hello world", "dlrow olleh", true)
+    ///     .test("group", "hello world", "dlrow olleh", true)
     ///     .file(FileContent::string("// some javascript code"), "solution.js")
     ///     .file(FileContent::path("/foo/bar"), "some_other_file")
     ///     .build();
@@ -230,7 +230,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
     /// # use erudite::{FileContent, FileConfig, TestContext};
     /// let ctx = TestContext::builder()
     ///     .run_command(["node", "solution.js"])
-    ///     .test("hello world", "dlrow olleh", true)
+    ///     .test("group", "hello world", "dlrow olleh", true)
     ///     .files([
     ///         FileConfig::new(FileContent::string("// some javascript code"), "solution.js"),
     ///         FileConfig::new(FileContent::path("/foo/bar"), "some_other_file")
@@ -250,7 +250,7 @@ impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd> {
 }
 
 // `.run_command` when no command has been added
-impl<T, Tests> TestContextBuilder<T, Tests, MissingRunCmd> {
+impl<G, T, Tests> TestContextBuilder<G, T, Tests, MissingRunCmd> {
     /// Set the command to run the tests
     ///
     /// The command must have at least one item to be valid.  If it does not, the error will be
@@ -262,25 +262,26 @@ impl<T, Tests> TestContextBuilder<T, Tests, MissingRunCmd> {
     /// # use erudite::TestContext;
     /// let ctx = TestContext::builder()
     ///     .run_command(["node", "solution.js"])
-    ///     .test("hello world", "dlrow olleh", true)
+    ///     .test("group", "hello world", "dlrow olleh", true)
     ///     .build();
     /// ```
     pub fn run_command(
         mut self,
         command: impl IntoIterator<Item = impl Into<String>>,
-    ) -> TestContextBuilder<T, Tests, SetRunCmd> {
+    ) -> TestContextBuilder<G, T, Tests, SetRunCmd> {
         self.command
             .with_run(command.into_iter().map(Into::into).collect());
         self.transform()
     }
 }
 
-impl<T, Tests, RunCmd> TestContextBuilder<T, Tests, RunCmd>
+impl<G, T, Tests, RunCmd> TestContextBuilder<G, T, Tests, RunCmd>
 where
     T: Clone, // This bound is a little bit arbitrary here, but it makes errors cleaner as
-              // [`TestContext::test_builder`] needs it.
+    // [`TestContext::test_builder`] needs it.
+    G: Hash + Eq,
 {
-    /// Add a single test to this context
+    /// Add a single test to this context in a group
     ///
     /// The `data` argument is for any data that you wish to associate with this test (on top of
     /// its index, which is assocated by default).  This is useful for adding additional
@@ -288,35 +289,58 @@ where
     ///
     /// The data is accessible by [`TestRunner::filter_tests`] and [`TestResult::data`].
     ///
+    /// The `group` argument is used to associate tests with eachother.  When creating a test
+    /// runner, one uses the `group` to select just the tests that they wish to run.  Group keys
+    /// must implement [`Hash`] and [`Eq`], but other than that, there is no restriction.  This
+    /// function requires an owned `G` for each test case, but to reduce copies,
+    /// [`TestContextBuilder::tests`] may be preferred.
+    ///
+    /// There is a special case if `G` is `()`: a [`TestContext::default_test_runner`] becomes
+    /// available, which requires no argment and does not return an option.  This is ideal if only
+    /// one test group is necessary.
+    ///
     /// [`TestRunner::filter_tests`]: crate::runner::TestRunner::filter_tests
     /// [`TestResult::data`]: crate::runner::TestResult::data
     ///
     /// ```
     /// # use erudite::TestContext;
-    /// let ctx: TestContext<bool> = TestContext::builder()
+    /// let ctx = TestContext::builder()
     ///     .run_command(["echo", "hi"])
-    ///     .test("hello world", "dlrow olleh", true)
+    ///     .test("group", "hello world", "dlrow olleh", true)
     ///     .build();
     /// ```
     pub fn test(
         mut self,
+        group: G,
         input: impl Into<String>,
         output: impl Into<ExpectedOutput>,
         data: T,
-    ) -> TestContextBuilder<T, SetTests, RunCmd> {
-        self.test_cases.push(TestCase::new(input, output, data));
+    ) -> TestContextBuilder<G, T, SetTests, RunCmd> {
+        self.test_cases
+            .entry(group)
+            .or_default()
+            .push(TestCase::new(input, output, data));
         self.transform()
     }
 
     /// Add a series of tests to this context
     ///
-    /// See [`Self::test`] for additional information.
+    /// The `group` argument is used to associate tests with eachother.  When creating a test
+    /// runner, one uses the `group` to select just the tests that they wish to run.  Group keys
+    /// must implement [`Hash`] and [`Eq`], but other than that, there is no restriction.  This
+    /// function may be preferable over [`TestContextBuilder::test`] as there is only need for one
+    /// allocated group key.
     ///
+    /// There is a special case if `G` is `()`: a [`TestContext::default_test_runner`] becomes
+    /// available, which requires no argment and does not return an option.  This is ideal if only
+    /// one test group is necessary.
+    ///
+    /// See [`Self::test`] for additional information.
     /// ```
     /// # use erudite::TestContext;
-    /// let ctx: TestContext<bool> = TestContext::builder()
+    /// let ctx = TestContext::builder()
     ///     .run_command(["echo", "hi"])
-    ///     .tests([
+    ///     .tests("group", [
     ///         ("hello world", "dlrow olleh", true),
     ///         ("good morning", "gninrom doog", true),
     ///     ])
@@ -326,23 +350,34 @@ where
     // iterator with 0 elements, but it's a relatively rare case.
     pub fn tests(
         mut self,
+        group: G,
         tests: impl IntoIterator<Item = impl Into<TestCase<T>>>,
-    ) -> TestContextBuilder<T, SetTests, RunCmd> {
-        self.test_cases.extend(tests.into_iter().map(Into::into));
+    ) -> TestContextBuilder<G, T, SetTests, RunCmd> {
+        self.test_cases
+            .entry(group)
+            .or_default()
+            .extend(tests.into_iter().map(Into::into));
         self.transform()
     }
 }
 
-impl<T> TestContextBuilder<T, SetTests, SetRunCmd> {
+impl<G, T> TestContextBuilder<G, T, SetTests, SetRunCmd>
+where
+    G: Hash + Eq,
+{
     /// Finish building this test context
-    pub fn build(self) -> TestContext<T> {
+    pub fn build(self) -> TestContext<G, T> {
         // Just some sanity checks
         assert!(self.command.run().is_some());
         assert!(!self.test_cases.is_empty());
         TestContext {
             trim_output: self.trim_output,
             files: self.files,
-            test_cases: self.test_cases,
+            test_cases: self
+                .test_cases
+                .into_iter()
+                .map(|(k, v)| (k, v.into_boxed_slice().into()))
+                .collect(),
             command: self.command.into(),
             timeout: self.timeout,
             rules: self.rules,
@@ -365,7 +400,7 @@ mod test {
     fn minimal_builder() {
         let ctx = TestContext::builder()
             .run_command(["echo", "foo"])
-            .test("hello", "world", ())
+            .test("group1", "hello", "world", ())
             .build();
 
         assert_eq!(
@@ -373,15 +408,17 @@ mod test {
             Some(&["echo".to_string(), "foo".to_string()][..])
         );
 
-        assert_eq!(ctx.test_cases[0].input(), "hello");
-        assert!(matches!(ctx.test_cases[0].output(), ExpectedOutput::String(s) if s == "world"));
+        assert_eq!(ctx.test_cases["group1"][0].input(), "hello");
+        assert!(
+            matches!(ctx.test_cases["group1"][0].output(), ExpectedOutput::String(s) if s == "world")
+        );
     }
 
     #[test]
     fn absolute_file_destination() {
         let ctx = TestContext::builder()
             .run_command(["echo", "foo"])
-            .test("hello", "world", ())
+            .test(0, "hello", "world", ())
             .file(Path::new("./foo/bar.txt"), "/foo/bar.txt")
             .build();
 
@@ -392,7 +429,7 @@ mod test {
     fn absolute_files_destination() {
         let ctx = TestContext::builder()
             .run_command(["echo", "foo"])
-            .test("hello", "world", ())
+            .test(0, "hello", "world", ())
             .files([
                 (Path::new("./foo/bar.txt"), "/bar.txt"),
                 (Path::new("./foo/bar.txt"), "/foo/bar.rs"),
@@ -411,7 +448,7 @@ mod test {
                     let a = $a;
                     let ctx = TestContext::builder()
                         .run_command(["echo", "foo"])
-                        .test("hello", "world", ())
+                        .test(0, "hello", "world", ())
                         .$field(a.clone())
                         .build();
 
@@ -421,7 +458,7 @@ mod test {
                     let b = $b;
                     let ctx = TestContext::builder()
                         .run_command(["echo", "foo"])
-                        .test("hello", "world", ())
+                        .test(0, "hello", "world", ())
                         .$run_field(a.clone())
                         .$compile_field(b.clone())
                         .build();
@@ -459,12 +496,12 @@ mod test {
     fn builder_test_tests_equivalent() {
         let singular = TestContext::builder()
             .run_command([""])
-            .test("foo", "bar", 5)
-            .test("bar", "baz", 6)
+            .test(0, "foo", "bar", 5)
+            .test(0, "bar", "baz", 6)
             .build();
         let plural = TestContext::builder()
             .run_command([""])
-            .tests([("foo", "bar", 5), ("bar", "baz", 6)])
+            .tests(0, [("foo", "bar", 5), ("bar", "baz", 6)])
             .build();
 
         assert_eq!(singular.test_cases, plural.test_cases);
@@ -474,7 +511,7 @@ mod test {
     fn builder_file_files_equivalent() {
         let singular = TestContext::builder()
             .run_command([""])
-            .test("", "", 0)
+            .test(0, "", "", 0)
             .file("foo".as_bytes().to_vec(), "bar.rs")
             .file("bar".as_bytes().to_vec(), "baz.rs")
             .file(Path::new("bar"), "baz.txt")
@@ -482,7 +519,7 @@ mod test {
             .build();
         let plural = TestContext::builder()
             .run_command([""])
-            .test("", "", 0)
+            .test(0, "", "", 0)
             .files([
                 ("foo".as_bytes().to_vec(), "bar.rs"),
                 ("bar".as_bytes().to_vec(), "baz.rs"),
@@ -506,7 +543,7 @@ mod test {
     /// ```compile_fail
     /// use erudite::TestContext;
     /// let context = TestContext::builder()
-    ///     .test("foo", "bar", ())
+    ///     .test((), "foo", "bar", ())
     ///     .build();
     /// ```
     ///
@@ -514,9 +551,9 @@ mod test {
     /// ```compile_fail
     /// use erudite::TestContext;
     /// let context = TestContext::builder()
-    ///     .test("foo", "bar", ())
-    ///     .test("foo", "bar", ())
-    ///     .test("foo", "bar", ())
+    ///     .test((), "foo", "bar", ())
+    ///     .test((), "foo", "bar", ())
+    ///     .test((), "foo", "bar", ())
     ///     .build();
     /// ```
     ///
@@ -524,7 +561,7 @@ mod test {
     /// ```compile_fail
     /// use erudite::TestContext;
     /// let context = TestContext::builder()
-    ///     .tests([("foo", "bar", ())])
+    ///     .tests((), [("foo", "bar", ())])
     ///     .build();
     /// ```
     ///
@@ -532,7 +569,7 @@ mod test {
     /// ```compile_fail
     /// use erudite::TestContext;
     /// let context = TestContext::builder()
-    ///     .tests([("foo", "bar", ()), ("baz", "qux", ())])
+    ///     .tests((), [("foo", "bar", ()), ("baz", "qux", ())])
     ///     .build();
     /// ```
     ///

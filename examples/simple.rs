@@ -22,9 +22,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .add_connect_port(443);
 
     let context = TestContext::builder()
-        .test("hello world", "dlrow olleh", true)
-        .test("foo", Regex::new(r"\d+").unwrap(), true)
-        .test("hello", "olleh", true)
+        .test("test_group", "hello world", "dlrow olleh", true)
+        .test("test_group", "foo", Regex::new(r"\d+").unwrap(), true)
+        .test("test_group", "hello", "olleh", true)
         // .file(FileContent::path("examples/runner.rs"), "./runner.rs")
         .compile_command(["rustc", "--color=always", "-o", "solution", "solution.rs"])
         .run_command(["./solution"])
@@ -36,7 +36,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     dbg!(&context);
 
     let compiled = Arc::new(context)
-        .test_runner()
+        .test_runner(&"test_group")
+        .expect("just added test_group")
         .file(
             BorrowedFileContent::string(include_str!("./solution.rs")),
             Path::new("./solution.rs"),

@@ -11,7 +11,7 @@ async fn malicious_fail() -> Result<(), Box<dyn Error>> {
         .add_read_only("/bin");
 
     let context = TestContext::builder()
-        .test("foo", "bar", ())
+        .test((), "foo", "bar", ())
         .run_command(["node", "malicious.js"])
         .rules(rules)
         .timeout(Duration::from_secs(5))
@@ -21,7 +21,7 @@ async fn malicious_fail() -> Result<(), Box<dyn Error>> {
     let context = Arc::new(context);
 
     let compiled = context
-        .test_runner()
+        .default_test_runner()
         .file(
             BorrowedFileContent::string(include_str!("./malicious.js")),
             Path::new("malicious.js"),

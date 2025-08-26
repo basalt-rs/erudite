@@ -14,12 +14,15 @@
 //! A test context is designed with the intention that it can be placed into an [`Arc`] and be used
 //! throughout the program, creating test runners, which can be used to run tests.
 //!
+//! In a test context, individual tests are associated via groups.  A group can be anything (with
+//! some restrictions, see [`TestContextBuilder::test`] for details).
+//!
 //! # [`TestRunner`]
 //!
-//! A test runner is created from a test context and is used to run a test suite.  There are some
-//! additional configurations that can be added to the test runner for run-specific settings.  Once
-//! a runner has been created, it can compile and then run the tests, giving a handle to those
-//! tests.
+//! A test runner is created from a test context by selecting a single group and is used to run a
+//! test suite.  There are some additional configurations that can be added to the test runner for
+//! run-specific settings.  Once a runner has been created, it can compile and then run the tests,
+//! giving a handle to those tests.
 //!
 //! # [`TestHandle`]
 //!
@@ -49,10 +52,10 @@
 //! let context = TestContext::builder()
 //!     .compile_command(["rustc", "-o", "runner", "runner.rs"])
 //!     .run_command(["./runner"])
-//!     .test("hello", "olleh", ())
-//!     .test("world", "dlrow", ())
-//!     .test("rust", "tsur", ())
-//!     .test("tacocat", "tacocat", ())
+//!     .test("group", "hello", "olleh", ())
+//!     .test("group", "world", "dlrow", ())
+//!     .test("group", "rust", "tsur", ())
+//!     .test("group", "tacocat", "tacocat", ())
 //!     .trim_output(true)
 //!     .file(FileContent::string(runner_code), "runner.rs")
 //!     .build();
@@ -60,7 +63,8 @@
 //! let context = Arc::new(context);
 //!
 //! let mut handle = context
-//!     .test_runner()
+//!     .test_runner(&"group")
+//!     .expect("This group was added above")
 //!     .file(BorrowedFileContent::string(solution_code), Path::new("solution.rs"))
 //!     .compile_and_run()
 //!     .await?;
@@ -201,7 +205,7 @@ impl Output {
     }
 }
 
-// NOTE: For some reason, when using `async`, the returned future is not `Send`.
+// NOTE: For some reason, when using `async fn`, the returned future is not `Send`.
 #[allow(clippy::manual_async_fn)]
 fn copy_dir_recursive(
     src: impl Into<PathBuf>,

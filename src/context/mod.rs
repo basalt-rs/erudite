@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, hash::Hash, sync::Arc, time::Duration};
 
 use leucite::{MemorySize, Rules};
 
@@ -108,10 +108,10 @@ impl<T> StageConfig<T> {
 /// let context = TestContext::builder()
 ///     .compile_command(["rustc", "-o", "main", "main.rs"])
 ///     .run_command(["./main"])
-///     .test("hello", "olleh", ())
-///     .test("world", "dlrow", ())
-///     .test("rust", "tsur", ())
-///     .test("tacocat", "tacocat", ())
+///     .test("group", "hello", "olleh", ())
+///     .test("group", "world", "dlrow", ())
+///     .test("group", "rust", "tsur", ())
+///     .test("group", "tacocat", "tacocat", ())
 ///     .trim_output(true)
 ///     .file(FileContent::string("// some rust code"), "main.rs")
 ///     .timeout(Duration::from_secs(5))
@@ -122,10 +122,10 @@ impl<T> StageConfig<T> {
 ///     .build();
 /// ```
 #[derive(Debug, Clone)]
-pub struct TestContext<T> {
+pub struct TestContext<G, T> {
     pub(crate) trim_output: bool,
     pub(crate) files: Vec<FileConfig>,
-    pub(crate) test_cases: Vec<TestCase<T>>,
+    pub(crate) test_cases: HashMap<G, Arc<[TestCase<T>]>>,
     pub(crate) command: StageConfig<Box<[String]>>,
     pub(crate) timeout: StageConfig<Duration>,
     pub(crate) rules: StageConfig<Rules>,
@@ -134,15 +134,34 @@ pub struct TestContext<T> {
     pub(crate) max_threads: StageConfig<u64>,
 }
 
-impl<T> TestContext<T> {
+impl<G, T> TestContext<G, T>
+where
+    G: Hash + Eq,
+{
     /// Construct a builder for [`TestContext`], see [`TestContextBuilder`] for more details.
-    pub fn builder() -> TestContextBuilder<T> {
+    pub fn builder() -> TestContextBuilder<G, T> {
         TestContextBuilder::new()
     }
 
     /// Create a [`TestRunner`] from this context.  See [`TestRunner`] for more details.
-    pub fn test_runner<'a>(self: Arc<Self>) -> TestRunner<'a, T> {
-        TestRunner::new(self)
+    pub fn test_runner<'a, Q>(self: Arc<Self>, group: &Q) -> Option<TestRunner<'a, G, T>>
+    where
+        G: std::borrow::Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let cases = Arc::clone(self.test_cases.get(group)?);
+        Some(TestRunner::new(self, cases))
+    }
+}
+
+impl<T> TestContext<(), T> {
+    /// Create a [`TestRunner`] from this context if the group is `()`.  This does not need to
+    /// return `Option` like [`TestContext::test_runner`], as it is guanteed by the builder that
+    /// there is an entry.
+    pub fn default_test_runner<'a>(self: Arc<Self>) -> TestRunner<'a, (), T> {
+        assert!(self.test_cases.len() == 1);
+        let cases = Arc::clone(self.test_cases.get(&()).expect("asserted above"));
+        TestRunner::new(self, cases)
     }
 }
 

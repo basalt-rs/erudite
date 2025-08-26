@@ -8,14 +8,14 @@ const COMMANDS_SOLUTION: &str = include_str!("./code/commands.rs");
 #[tokio::test]
 async fn all_invalid() -> Result<(), Box<dyn Error>> {
     let ctx: Arc<_> = TestContext::builder()
-        .test("non-utf8", "", ())
+        .test((), "non-utf8", "", ())
         .compile_command(["rustc", "--color=always", "-o", "solution", "solution.rs"])
         .run_command(["./solution"])
         .file(COMMANDS_SOLUTION.as_bytes(), "solution.rs")
         .build()
         .into();
 
-    let handle_res = ctx.test_runner().compile_and_run().await;
+    let handle_res = ctx.default_test_runner().compile_and_run().await;
 
     if let Err(CompileError::CompileFail(ref c)) = handle_res {
         eprintln!("COMPILE FAIL");
@@ -37,17 +37,17 @@ async fn all_invalid() -> Result<(), Box<dyn Error>> {
 #[tokio::test]
 async fn all_valid() -> Result<(), Box<dyn Error>> {
     let ctx: Arc<_> = TestContext::builder()
-        .test("echo foo bar", "foo bar", ())
-        .test("echo 123", Regex::new(r"^\d+$").unwrap(), ())
-        .test("echo a2b", Regex::new(r"\d").unwrap(), ())
-        .test("echo ab2", Regex::new(r"\d$").unwrap(), ())
+        .test((), "echo foo bar", "foo bar", ())
+        .test((), "echo 123", Regex::new(r"^\d+$").unwrap(), ())
+        .test((), "echo a2b", Regex::new(r"\d").unwrap(), ())
+        .test((), "echo ab2", Regex::new(r"\d$").unwrap(), ())
         .compile_command(["rustc", "--color=always", "-o", "solution", "solution.rs"])
         .run_command(["./solution"])
         .file(COMMANDS_SOLUTION.as_bytes(), "solution.rs")
         .build()
         .into();
 
-    let handle_res = ctx.test_runner().compile_and_run().await;
+    let handle_res = ctx.default_test_runner().compile_and_run().await;
 
     if let Err(CompileError::CompileFail(ref c)) = handle_res {
         eprintln!("COMPILE FAIL");

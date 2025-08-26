@@ -152,14 +152,15 @@ async fn wait_with_output_and_timeout(
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let context = TestContext::builder()
-///     .test("hello", "olleh", Data { visible: false })
-///     .test("world", "dlrow", Data { visible: true })
+///     .test("group", "hello", "olleh", Data { visible: false })
+///     .test("group", "world", "dlrow", Data { visible: true })
 ///     .run_command(["node", "solution.js"])
 ///     .build();
 /// let context = Arc::new(context);
 ///
 /// let test_handle = context
-///     .test_runner()
+///     .test_runner(&"group")
+///     .unwrap()
 ///     .file(Path::new("user-solution.js"), Path::new("solution.js"))
 ///     .filter_tests(|t| t.data().visible)
 ///     .cwd(Path::new("./test"))
@@ -170,21 +171,23 @@ async fn wait_with_output_and_timeout(
 /// ```
 #[must_use]
 #[derive(Debug)]
-pub struct TestRunner<'a, T> {
-    context: Arc<TestContext<T>>,
+pub struct TestRunner<'a, G, T> {
+    context: Arc<TestContext<G, T>>,
     files: Vec<BorrowedFileConfig<'a>>,
     test_filter: Option<fn(&TestCase<T>) -> bool>,
+    test_cases: Arc<[TestCase<T>]>,
     cwd: Option<&'a Path>,
     collect_output: bool,
 }
 
 // Builder functions
-impl<'a, T> TestRunner<'a, T> {
-    pub(crate) fn new(context: Arc<TestContext<T>>) -> Self {
+impl<'a, G, T> TestRunner<'a, G, T> {
+    pub(crate) fn new(context: Arc<TestContext<G, T>>, cases: Arc<[TestCase<T>]>) -> Self {
         Self {
             context,
             files: Default::default(),
             test_filter: None,
+            test_cases: cases,
             cwd: None,
             collect_output: true,
         }
@@ -255,9 +258,10 @@ impl<'a, T> TestRunner<'a, T> {
 }
 
 // implementation functions
-impl<'a, T> TestRunner<'a, T>
+impl<'a, G, T> TestRunner<'a, G, T>
 where
     T: Send + Sync + Clone + 'static,
+    G: Send + Sync + 'static,
 {
     async fn create_files(&mut self, cwd: &Path) -> Result<(), CreateFilesError> {
         for file in &self.context.files {
@@ -370,14 +374,15 @@ where
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let context = TestContext::builder()
-    ///     .test("hello", "olleh", Data { visible: false })
-    ///     .test("world", "dlrow", Data { visible: true })
+    ///     .test("group", "hello", "olleh", Data { visible: false })
+    ///     .test("group", "world", "dlrow", Data { visible: true })
     ///     .run_command(["node", "solution.js"])
     ///     .build();
     /// let context = Arc::new(context);
     ///
     /// let compiled = context
-    ///     .test_runner()
+    ///     .test_runner(&"group")
+    ///     .unwrap()
     ///     .file(Path::new("user-solution.js"), Path::new("solution.js"))
     ///     .filter_tests(|t| t.data().visible)
     ///     .cwd(Path::new("./test"))
@@ -388,7 +393,7 @@ where
     /// let test_handle = compiled.run();
     /// # Ok(()) }
     /// ```
-    pub async fn compile(mut self) -> Result<CompiledTestRunner<'a, T>, CompileError> {
+    pub async fn compile(mut self) -> Result<CompiledTestRunner<'a, G, T>, CompileError> {
         let mut tmpdir = None;
         let cwd = if let Some(cwd) = self.cwd.take() {
             trace!(?cwd, "Using specified cwd");
@@ -454,14 +459,15 @@ where
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let context = TestContext::builder()
-    ///     .test("hello", "olleh", Data { visible: false })
-    ///     .test("world", "dlrow", Data { visible: true })
+    ///     .test("group", "hello", "olleh", Data { visible: false })
+    ///     .test("group", "world", "dlrow", Data { visible: true })
     ///     .run_command(["node", "solution.js"])
     ///     .build();
     /// let context = Arc::new(context);
     ///
     /// let test_handle = context
-    ///     .test_runner()
+    ///     .test_runner(&"group")
+    ///     .unwrap()
     ///     .file(Path::new("user-solution.js"), Path::new("solution.js"))
     ///     .filter_tests(|t| t.data().visible)
     ///     .cwd(Path::new("./test"))
@@ -478,31 +484,32 @@ where
 /// A test runner that has been compiled already.  The tests are now able to be run.
 #[must_use]
 #[derive(Debug)]
-pub struct CompiledTestRunner<'a, T> {
-    test_runner: TestRunner<'a, T>,
+pub struct CompiledTestRunner<'a, G, T> {
+    test_runner: TestRunner<'a, G, T>,
     cwd: PathBuf,
     tmpdir: Option<TmpDir>,
     compile_result: Option<CompileResult>,
     run_rules: Option<Arc<Rules>>,
 }
 
-impl<T> CompiledTestRunner<'_, T> {
+impl<G, T> CompiledTestRunner<'_, G, T> {
     /// Get the result of the compilation step.  This also available from [`TestHandle::compile_result`].
     pub fn compile_result(&self) -> Option<&CompileResult> {
         self.compile_result.as_ref()
     }
 }
 
-impl<T> CompiledTestRunner<'_, T>
+impl<G, T> CompiledTestRunner<'_, G, T>
 where
     T: Send + Sync + Clone + 'static,
+    G: Send + Sync + 'static,
 {
     async fn run_test(
         index: usize,
         cwd: &Path,
         case: TestCase<T>,
         run_rules: Option<Arc<Rules>>,
-        context: Arc<TestContext<T>>,
+        context: Arc<TestContext<G, T>>,
     ) -> Result<TestResult<T>, SpawnTestError> {
         let run_command = context.command.run().expect("checked in builder");
         let start = Instant::now();
@@ -560,7 +567,7 @@ where
     fn spawn_tests(&mut self) -> JoinSet<Result<TestResult<T>, SpawnTestError>> {
         let mut joinset = JoinSet::new();
 
-        for (i, case) in self.test_runner.context.test_cases.iter().enumerate() {
+        for (i, case) in self.test_runner.test_cases.iter().enumerate() {
             if self
                 .test_runner
                 .test_filter
@@ -601,14 +608,15 @@ where
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let context = TestContext::builder()
-    ///     .test("hello", "olleh", Data { visible: false })
-    ///     .test("world", "dlrow", Data { visible: true })
+    ///     .test("group", "hello", "olleh", Data { visible: false })
+    ///     .test("group", "world", "dlrow", Data { visible: true })
     ///     .run_command(["node", "solution.js"])
     ///     .build();
     /// let context = Arc::new(context);
     ///
     /// let compiled = context
-    ///     .test_runner()
+    ///     .test_runner(&"group")
+    ///     .unwrap()
     ///     .file(Path::new("user-solution.js"), Path::new("solution.js"))
     ///     .filter_tests(|t| t.data().visible)
     ///     .cwd(Path::new("./test"))
@@ -970,10 +978,13 @@ mod test {
     fn absolute_file_destination() {
         let ctx = TestContext::builder()
             .run_command(["echo", "foo"])
-            .test("hello", "world", ())
+            .test(0, "hello", "world", ())
             .build();
         let ctx = Arc::new(ctx);
-        let runner = ctx.test_runner().file(&b"hi"[..], Path::new("/bar.txt"));
+        let runner = ctx
+            .test_runner(&0)
+            .unwrap()
+            .file(&b"hi"[..], Path::new("/bar.txt"));
         assert_eq!(runner.files[0].dest(), Path::new("bar.txt"));
     }
 
@@ -981,10 +992,10 @@ mod test {
     fn absolute_files_destination() {
         let ctx = TestContext::builder()
             .run_command(["echo", "foo"])
-            .test("hello", "world", ())
+            .test(1, "hello", "world", ())
             .build();
         let ctx = Arc::new(ctx);
-        let runner = ctx.test_runner().files([
+        let runner = ctx.test_runner(&1).unwrap().files([
             (&b"hello"[..], Path::new("/bar.txt")),
             (&b"world"[..], Path::new("/foo/bar.rs")),
         ]);
@@ -993,20 +1004,56 @@ mod test {
     }
 
     #[test]
+    fn test_groups_equal() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test(0, "foo", "bar", ())
+            .test(0, "bar", "baz", ())
+            .test(0, "baz", "qux", ())
+            .test(1, "1", "2", ())
+            .test(1, "2", "3", ())
+            .test(1, "3", "4", ())
+            .build();
+        let ctx = Arc::new(ctx);
+        let runner1 = Arc::clone(&ctx).test_runner(&0).unwrap();
+        let runner2 = Arc::clone(&ctx).test_runner(&0).unwrap();
+        assert_eq!(runner1.test_cases, runner2.test_cases);
+    }
+
+    #[test]
+    fn test_groups_different() {
+        let ctx = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test(0, "foo", "bar", ())
+            .test(0, "bar", "baz", ())
+            .test(0, "baz", "qux", ())
+            .test(1, "1", "2", ())
+            .test(1, "2", "3", ())
+            .test(1, "3", "4", ())
+            .build();
+
+        let ctx = Arc::new(ctx);
+        let runner0 = Arc::clone(&ctx).test_runner(&0).unwrap();
+        let runner1 = Arc::clone(&ctx).test_runner(&1).unwrap();
+        assert_ne!(runner0.test_cases, runner1.test_cases);
+    }
+
+    #[test]
     fn runner_test_tests_equivalent() {
         let ctx = TestContext::builder()
             .run_command(["echo", "foo"])
-            .test("hello", "world", ())
+            .test(0, "hello", "world", ())
             .build();
         let ctx = Arc::new(ctx);
 
-        let runner1 = Arc::clone(&ctx).test_runner().files([
+        let runner1 = Arc::clone(&ctx).test_runner(&0).unwrap().files([
             (&b"hello"[..], Path::new("/bar.txt")),
             (&b"world"[..], Path::new("/foo/bar.rs")),
         ]);
 
         let runner2 = Arc::clone(&ctx)
-            .test_runner()
+            .test_runner(&0)
+            .unwrap()
             .file(&b"hello"[..], Path::new("/bar.txt"))
             .file(&b"world"[..], Path::new("/foo/bar.rs"));
 
@@ -1017,17 +1064,18 @@ mod test {
     async fn runner_with_filter() {
         let ctx = TestContext::builder()
             .run_command(["echo", "world"])
-            .test("hello", "world", true)
-            .test("hello", "world", true)
-            .test("hello", "world", true)
-            .test("hello", "world", false)
-            .test("hello", "world", false)
-            .test("hello", "world", false)
+            .test(0, "hello", "world", true)
+            .test(0, "hello", "world", true)
+            .test(0, "hello", "world", true)
+            .test(0, "hello", "world", false)
+            .test(0, "hello", "world", false)
+            .test(0, "hello", "world", false)
             .build();
         let ctx = Arc::new(ctx);
 
         let handle = Arc::clone(&ctx)
-            .test_runner()
+            .test_runner(&0)
+            .unwrap()
             .filter_tests(|t| *t.data())
             .compile_and_run()
             .await
@@ -1040,17 +1088,18 @@ mod test {
     async fn runner_without_filter() {
         let ctx = TestContext::builder()
             .run_command(["echo", "world"])
-            .test("hello", "world", true)
-            .test("hello", "world", true)
-            .test("hello", "world", true)
-            .test("hello", "world", false)
-            .test("hello", "world", false)
-            .test("hello", "world", false)
+            .test(0, "hello", "world", true)
+            .test(0, "hello", "world", true)
+            .test(0, "hello", "world", true)
+            .test(0, "hello", "world", false)
+            .test(0, "hello", "world", false)
+            .test(0, "hello", "world", false)
             .build();
         let ctx = Arc::new(ctx);
 
         let handle = Arc::clone(&ctx)
-            .test_runner()
+            .test_runner(&0)
+            .unwrap()
             .compile_and_run()
             .await
             .unwrap();
@@ -1062,14 +1111,15 @@ mod test {
     async fn custom_cwd() {
         let ctx = TestContext::builder()
             .run_command(["echo", "world"])
-            .test("hello", "world", ())
+            .test(0, "hello", "world", ())
             .file(b"some content", "foo.txt")
             .build();
         let ctx = Arc::new(ctx);
 
         let tmpdir = TmpDir::new("erudite-test").await.expect("creating tmpdir");
         let _runner = Arc::clone(&ctx)
-            .test_runner()
+            .test_runner(&0)
+            .unwrap()
             .cwd(tmpdir.as_ref())
             .compile()
             .await
@@ -1086,13 +1136,14 @@ mod test {
     async fn create_file_error_missing_target() {
         let ctx = TestContext::builder()
             .run_command(["echo", "world"])
-            .test("hello", "world", ())
+            .test(0, "hello", "world", ())
             .file(b"some content", "foo.txt")
             .build();
         let ctx = Arc::new(ctx);
 
         let ret = Arc::clone(&ctx)
-            .test_runner()
+            .test_runner(&0)
+            .unwrap()
             .cwd(Path::new("/path/does/not/exist"))
             .compile()
             .await;
@@ -1103,12 +1154,12 @@ mod test {
     async fn create_file_error_missing_source_context() {
         let ctx = TestContext::builder()
             .run_command(["echo", "world"])
-            .test("hello", "world", ())
+            .test(0, "hello", "world", ())
             .file(Path::new("/path/does/not/exist"), "foo.txt")
             .build();
         let ctx = Arc::new(ctx);
 
-        let ret = Arc::clone(&ctx).test_runner().compile().await;
+        let ret = Arc::clone(&ctx).test_runner(&0).unwrap().compile().await;
         assert!(ret.is_err());
     }
 
@@ -1116,12 +1167,13 @@ mod test {
     async fn create_file_error_missing_source_runner() {
         let ctx = TestContext::builder()
             .run_command(["echo", "world"])
-            .test("hello", "world", ())
+            .test(0, "hello", "world", ())
             .build();
         let ctx = Arc::new(ctx);
 
         let ret = Arc::clone(&ctx)
-            .test_runner()
+            .test_runner(&0)
+            .unwrap()
             .file(Path::new("/path/does/not/exist"), Path::new("foo.txt"))
             .compile()
             .await;
@@ -1133,12 +1185,13 @@ mod test {
         let ctx = TestContext::builder()
             .compile_command(["echo", "hello"])
             .run_command(["echo", "world"])
-            .test("hello", "world", ())
+            .test(0, "hello", "world", ())
             .build();
         let ctx = Arc::new(ctx);
 
         let output = Arc::clone(&ctx)
-            .test_runner()
+            .test_runner(&0)
+            .unwrap()
             .collect_output(false)
             .compile()
             .await
@@ -1155,12 +1208,13 @@ mod test {
             .compile_command(["sleep", "10s"])
             .run_command(["echo", "world"])
             .compile_timeout(Duration::from_millis(100))
-            .test("hello", "world", ())
+            .test((), "hello", "world", ())
             .build();
         let ctx = Arc::new(ctx);
 
         let res = Arc::clone(&ctx)
-            .test_runner()
+            .test_runner(&())
+            .unwrap()
             .collect_output(false)
             .compile()
             .await;
@@ -1175,12 +1229,12 @@ mod test {
             .compile_command(["cat", "/bin/cat"])
             .run_command(["echo", "world"])
             .compile_timeout(Duration::from_millis(100))
-            .test("hello", "world", ())
+            .test((), "hello", "world", ())
             .compile_rules(rules)
             .build();
         let ctx = Arc::new(ctx);
 
-        let res = Arc::clone(&ctx).test_runner().compile().await;
+        let res = Arc::clone(&ctx).default_test_runner().compile().await;
         assert!(res.is_err());
     }
 
@@ -1191,12 +1245,16 @@ mod test {
             .compile_command(["echo", "hello"])
             .run_command(["cat", "/bin/cat"])
             .compile_timeout(Duration::from_millis(100))
-            .test("hello", "world", ())
+            .test((), "hello", "world", ())
             .run_rules(rules)
             .build();
         let ctx = Arc::new(ctx);
 
-        let res = Arc::clone(&ctx).test_runner().compile().await.unwrap();
+        let res = Arc::clone(&ctx)
+            .default_test_runner()
+            .compile()
+            .await
+            .unwrap();
         let mut tests = res.run();
         assert!(tests.wait_next().await.is_err());
     }
@@ -1207,13 +1265,17 @@ mod test {
             .compile_command(["echo", "/bin/cat"])
             .run_command(["cat", "/bin/cat"])
             .compile_timeout(Duration::from_millis(100))
-            .test("hello", "world", ())
+            .test((), "hello", "world", ())
             .compile_rules(Rules::new().add_read_only("/usr").add_read_only("/bin"))
             .run_rules(Rules::new())
             .build();
         let ctx = Arc::new(ctx);
 
-        let res = Arc::clone(&ctx).test_runner().compile().await.unwrap();
+        let res = Arc::clone(&ctx)
+            .default_test_runner()
+            .compile()
+            .await
+            .unwrap();
         let mut tests = res.run();
         assert!(tests.wait_next().await.is_err());
     }
@@ -1224,13 +1286,13 @@ mod test {
             .compile_command(["echo", "/bin/cat"])
             .run_command(["cat", "/bin/cat"])
             .compile_timeout(Duration::from_millis(100))
-            .test("hello", "world", ())
+            .test((), "hello", "world", ())
             .compile_rules(Rules::new())
             .run_rules(Rules::new().add_read_only("/usr").add_read_only("/bin"))
             .build();
         let ctx = Arc::new(ctx);
 
-        let res = Arc::clone(&ctx).test_runner().compile().await;
+        let res = Arc::clone(&ctx).default_test_runner().compile().await;
         assert!(res.is_err());
     }
 
@@ -1240,12 +1302,16 @@ mod test {
             .compile_command(["echo", "/bin/cat"])
             .run_command(["cat", "/bin/cat"])
             .compile_timeout(Duration::from_millis(100))
-            .test("hello", "world", ())
+            .test((), "hello", "world", ())
             .rules(Rules::new().add_read_only("/usr").add_read_only("/bin"))
             .build();
         let ctx = Arc::new(ctx);
 
-        let res = Arc::clone(&ctx).test_runner().compile().await.unwrap();
+        let res = Arc::clone(&ctx)
+            .default_test_runner()
+            .compile()
+            .await
+            .unwrap();
         let mut tests = res.run();
         let test0 = tests.wait_next().await.unwrap().unwrap();
         assert_eq!(test0.state(), TestResultState::IncorrectOutput); // /bin/cat is almost certainly not "world"
@@ -1283,16 +1349,16 @@ mod test {
     async fn test_handle_getters() {
         let ctx = TestContext::builder()
             .run_command(["echo", "world"])
-            .test("hello", "world", ())
-            .test("hello", "world", ())
-            .test("hello", "world", ())
-            .test("hello", "world", ())
-            .test("hello", "world", ())
-            .test("hello", "world", ())
+            .test((), "hello", "world", ())
+            .test((), "hello", "world", ())
+            .test((), "hello", "world", ())
+            .test((), "hello", "world", ())
+            .test((), "hello", "world", ())
+            .test((), "hello", "world", ())
             .build();
         let ctx = Arc::new(ctx);
 
-        let mut runner = ctx.test_runner().compile_and_run().await.unwrap();
+        let mut runner = ctx.default_test_runner().compile_and_run().await.unwrap();
         assert_eq!(runner.tests_left(), 6);
         assert_eq!(runner.test_count(), 6);
         assert_eq!(runner.compile_result(), None);
@@ -1304,11 +1370,11 @@ mod test {
         let ctx = TestContext::builder()
             .compile_command(["echo", "world"])
             .run_command(["echo", "world"])
-            .test("", "world", ())
+            .test((), "", "world", ())
             .build();
         let ctx = Arc::new(ctx);
 
-        let runner = ctx.test_runner().compile_and_run().await.unwrap();
+        let runner = ctx.default_test_runner().compile_and_run().await.unwrap();
         assert!(runner.compile_result().is_some());
     }
 
@@ -1317,11 +1383,11 @@ mod test {
         let ctx = TestContext::builder()
             .compile_command(["echo", "hello"])
             .run_command(["echo", "world"])
-            .test("hello", "world", ())
+            .test((), "hello", "world", ())
             .build();
         let ctx = Arc::new(ctx);
 
-        let runner = ctx.test_runner().compile().await.unwrap();
+        let runner = ctx.default_test_runner().compile().await.unwrap();
         let result = runner.compile_result().unwrap();
         assert_eq!(
             result.output(),

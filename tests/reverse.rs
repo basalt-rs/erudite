@@ -7,10 +7,10 @@ async fn reverse() -> Result<(), Box<dyn Error>> {
     let context = TestContext::builder()
         .compile_command(["rustc", "-o", "runner", "runner.rs"])
         .run_command(["./runner"])
-        .test("hello", "olleh", ())
-        .test("world", "dlrow", ())
-        .test("rust", "tsur", ())
-        .test("tacocat", "tacocat", ())
+        .test((), "hello", "olleh", ())
+        .test((), "world", "dlrow", ())
+        .test((), "rust", "tsur", ())
+        .test((), "tacocat", "tacocat", ())
         .trim_output(true)
         .file(
             FileContent::string(include_str!("./code/reverse-runner.rs")),
@@ -21,7 +21,7 @@ async fn reverse() -> Result<(), Box<dyn Error>> {
     let context = Arc::new(context);
 
     let mut handle = context
-        .test_runner()
+        .default_test_runner()
         .file(
             BorrowedFileContent::string(include_str!("./code/reverse-solution.rs")),
             Path::new("solution.rs"),
