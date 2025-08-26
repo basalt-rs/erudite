@@ -359,6 +359,47 @@ where
             .extend(tests.into_iter().map(Into::into));
         self.transform()
     }
+
+    /// Add several test groups to this context
+    ///
+    /// The `group` argument is used to associate tests with eachother.  When creating a test
+    /// runner, one uses the `group` to select just the tests that they wish to run.  Group keys
+    /// must implement [`Hash`] and [`Eq`], but other than that, there is no restriction.  This
+    /// function may be preferable over [`TestContextBuilder::test`] as there is only need for one
+    /// allocated group key.
+    ///
+    /// There is a special case if `G` is `()`: a [`TestContext::default_test_runner`] becomes
+    /// available, which requires no argment and does not return an option.  This is ideal if only
+    /// one test group is necessary.
+    ///
+    /// NOTE: This gets very syntactically noisy when writing out by hand.  This function is very
+    /// much intended for use with iterators, rather than manually written.  If you're manully
+    /// writing cases, see [`TestContextBuilder::tests`].
+    ///
+    /// ```
+    /// # use erudite::TestContext;
+    /// let ctx = TestContext::builder()
+    ///     .run_command(["echo", "hi"])
+    ///     .test_groups([
+    ///         ("group1", [("hello world", "dlrow olleh", true), ("good morning", "gninrom doog", true)]),
+    ///         ("group2", [("52", "even", true), ("27", "odd", true)])
+    ///     ])
+    ///     .build();
+    /// ```
+    // NOTE: this function in the type-state builder is not perfect, as the caller could pass an
+    // iterator with 0 elements, but it's a relatively rare case.
+    pub fn test_groups(
+        mut self,
+        test_groups: impl IntoIterator<Item = (G, impl IntoIterator<Item = impl Into<TestCase<T>>>)>,
+    ) -> TestContextBuilder<G, T, SetTests, RunCmd> {
+        test_groups.into_iter().for_each(|(group, tests)| {
+            self.test_cases
+                .entry(group)
+                .or_default()
+                .extend(tests.into_iter().map(Into::into));
+        });
+        self.transform()
+    }
 }
 
 impl<G, T> TestContextBuilder<G, T, SetTests, SetRunCmd>

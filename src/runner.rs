@@ -1021,6 +1021,47 @@ mod test {
     }
 
     #[test]
+    fn test_groups_test_groups_equal() {
+        let ctx1 = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test(0, "foo", "bar", ())
+            .test(0, "bar", "baz", ())
+            .test(0, "baz", "qux", ())
+            .test(0, "qux", "quux", ())
+            .test(1, "1", "2", ())
+            .test(1, "2", "3", ())
+            .test(1, "3", "4", ())
+            .test(1, "4", "5", ())
+            .build();
+
+        let ctx2 = TestContext::builder()
+            .run_command(["echo", "foo"])
+            .test_groups([
+                (
+                    0,
+                    [
+                        ("foo", "bar", ()),
+                        ("bar", "baz", ()),
+                        ("baz", "qux", ()),
+                        ("qux", "quux", ()),
+                    ],
+                ),
+                (
+                    1,
+                    [
+                        ("1", "2", ()),
+                        ("2", "3", ()),
+                        ("3", "4", ()),
+                        ("4", "5", ()),
+                    ],
+                ),
+            ])
+            .build();
+
+        assert_eq!(ctx1.test_cases, ctx2.test_cases);
+    }
+
+    #[test]
     fn test_groups_different() {
         let ctx = TestContext::builder()
             .run_command(["echo", "foo"])
