@@ -9,6 +9,7 @@ use leucite::{MemorySize, Rules};
 
 #[tokio::test]
 async fn java_success() -> Result<(), Box<dyn Error>> {
+    let in_ci = std::env::var_os("GITHUB_ACTIONS").is_some();
     let rules = Rules::new()
         .add_read_only("/usr")
         .add_read_only("/etc")
@@ -23,7 +24,8 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
         .run_command(["java", "Solution"])
         .rules(rules)
         .max_memory(MemorySize::from_mb(800))
-        .timeout(Duration::from_secs(5))
+        .compile_timeout(Duration::from_secs(if in_ci { 10 } else { 5 })) // CI is _really_ slow sometimes
+        .run_timeout(Duration::from_secs(5))
         .trim_output(true)
         .build();
 
@@ -70,6 +72,7 @@ async fn java_success() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
+    let in_ci = std::env::var_os("GITHUB_ACTIONS").is_some();
     let rules = Rules::new()
         .add_read_only("/usr")
         .add_read_only("/etc")
@@ -84,7 +87,8 @@ async fn java_compile_fail() -> Result<(), Box<dyn Error>> {
         .run_command(["java", "Solution"])
         .rules(rules)
         .max_memory(MemorySize::from_mb(800))
-        .timeout(Duration::from_secs(5))
+        .compile_timeout(Duration::from_secs(if in_ci { 10 } else { 5 })) // CI is _really_ slow sometimes
+        .run_timeout(Duration::from_secs(5))
         .build();
 
     dbg!(&context);
