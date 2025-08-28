@@ -758,6 +758,12 @@ impl<T> TestHandle<T> {
 impl<T: 'static> TestHandle<T> {
     /// Wait for the next test to finish.  The test result returned from this is _not_ ordered, but
     /// the index may be received from [`TestResult::index`].
+    ///
+    /// # Cancel Safety
+    ///
+    /// This method is cancel safe. If `wait_next` is used as the event in a `tokio::select!`
+    /// statement and some other branch completes first, it is guaranteed that no test resultss
+    /// were removed from this `TestHandle`.
     pub async fn wait_next(&mut self) -> Result<Option<TestResult<T>>, SpawnTestError> {
         match self.joinset.join_next().await {
             Some(Err(e)) => Err(SpawnTestError::JoinError(e)),
@@ -768,6 +774,12 @@ impl<T: 'static> TestHandle<T> {
 
     /// Wait for all tests to complete and return a vector of test cases.  The returned vector _is
     /// ordered_ based on the order in which the tests were inserted in the [`TestContext`].
+    ///
+    /// # Cancel Safety
+    ///
+    /// This method is not cancellation safe. If the method is used as the event in a
+    /// `tokio::select!` statement and some other branch completes first, then some test results
+    /// may already have been consumed.
     pub async fn wait_all(&mut self) -> Result<Vec<TestResult<T>>, SpawnTestError> {
         // NOTE: using joinset len here, rather than test_count in case `wait_next` has been called at all
         let len = self.joinset.len();
