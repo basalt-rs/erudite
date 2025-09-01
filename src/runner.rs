@@ -644,7 +644,7 @@ where
 }
 
 /// The state of a test result
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum TestResultState {
     /// This test has passed without issue
     Pass,
@@ -658,7 +658,7 @@ pub enum TestResultState {
 
 /// The result from running the test.  This also contains the data associated with the test and the
 /// index of the test when added to the [`TestContext`].
-#[derive(Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Hash)]
 pub struct TestResult<T> {
     index: usize,
     /// Option so that it can be taken using [`Self::take_data`]
@@ -674,7 +674,7 @@ impl<T> TestResult<T> {
         self.index
     }
 
-    /// Take the data associated with this test.  After the first call, will always return [`None`]..
+    /// Take the data associated with this test.  After the first call, will always return [`None`].
     pub fn take_data(&mut self) -> Option<T> {
         self.data.take()
     }

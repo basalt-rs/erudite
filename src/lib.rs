@@ -97,7 +97,7 @@ pub mod runner;
 /// Represents some data that may either be a string or a series of bytes.  The recommended method
 /// for constructing this type is to use [`From::from`] which will automatically choose the
 /// appropriate variant for the data.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Bytes {
     /// Data contained within is a string
     String(String),
@@ -168,7 +168,7 @@ impl From<Vec<u8>> for Bytes {
 
 /// The output of a finished process, containing standard output, standard input, and the exit
 /// status
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Output {
     stdout: Bytes,
     stderr: Bytes,
