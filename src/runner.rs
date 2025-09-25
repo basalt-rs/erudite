@@ -762,7 +762,7 @@ impl<T: 'static> TestHandle<T> {
     /// # Cancel Safety
     ///
     /// This method is cancel safe. If `wait_next` is used as the event in a `tokio::select!`
-    /// statement and some other branch completes first, it is guaranteed that no test resultss
+    /// statement and some other branch completes first, it is guaranteed that no test results
     /// were removed from this `TestHandle`.
     pub async fn wait_next(&mut self) -> Result<Option<TestResult<T>>, SpawnTestError> {
         match self.joinset.join_next().await {
