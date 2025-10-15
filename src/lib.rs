@@ -42,13 +42,10 @@
 //! # // This test is also at tests/reverse.rs
 //! # use erudite::{TestContext, FileContent, BorrowedFileContent, Rules, MemorySize, runner::TestResultState};
 //! # use std::{sync::Arc, time::Duration, path::Path};
-//! #
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! #
 //! # let runner_code = include_str!("../tests/code/reverse-runner.rs");
 //! # let solution_code = include_str!("../tests/code/reverse-solution.rs");
-//! #
 //! let context = TestContext::builder()
 //!     .compile_command(["rustc", "-o", "runner", "runner.rs"])
 //!     .run_command(["./runner"])
