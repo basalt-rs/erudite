@@ -7,20 +7,17 @@ pub use builder::TestContextBuilder;
 
 use crate::{cases::TestCase, runner::TestRunner, FileConfig};
 
-// TODO: rename (and update test names)
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub(crate) enum StageConfig<T> {
+    #[default]
     None,
     Compile(T),
     Run(T),
     Equal(T),
-    Different { compile: T, run: T },
-}
-
-impl<T> Default for StageConfig<T> {
-    fn default() -> Self {
-        Self::None
-    }
+    Different {
+        compile: T,
+        run: T,
+    },
 }
 
 impl<T> StageConfig<T> {
