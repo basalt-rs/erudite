@@ -3,6 +3,7 @@ name = "erudite"
 version = "1.0.0-rc.1"
 edition = "2021"
 rust-version = "1.80"
+authors = ["funnyboy-roks <fbr@funnyboyroks.com>"]
 description = "A fully-asynchronous, sandboxed, language-agnostic, test running library"
 license = "Apache-2.0"
 repository = "https://github.com/basalt-rs/erudite"
