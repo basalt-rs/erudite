@@ -116,21 +116,21 @@ impl<G, T, A, B> TestContextBuilder<G, T, A, B> {
 macro_rules! command_config_fns {
     ($field: ident, $type: ty, $noun: literal) => {
         concat_idents::concat_idents!(ident = run_, $field {
-            #[doc = concat!("Set the ", $noun, " when running the program")]
+            #[doc = concat!("Set the ", $noun, " when running the test")]
             pub fn ident(mut self, $field: $type) -> Self {
                 self.$field.with_run($field);
                 self
             }
         });
         concat_idents::concat_idents!(ident = compile_, $field {
-            #[doc = concat!("Set the ", $noun, " when compiling the program")]
+            #[doc = concat!("Set the ", $noun, " when compiling the test")]
             pub fn ident(mut self, $field: $type) -> Self {
                 self.$field.with_compile($field);
                 self
             }
         });
 
-        #[doc = concat!("Set the ", $noun, " of _both_ running and compiling the program")]
+        #[doc = concat!("Set the ", $noun, " of _both_ running and compiling the test")]
         pub fn $field(mut self, $field: $type) -> Self {
             self.$field.with_both($field);
             self

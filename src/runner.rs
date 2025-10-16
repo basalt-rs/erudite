@@ -2,6 +2,7 @@
 
 use std::{
     io::ErrorKind,
+    ops::Deref,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -23,7 +24,7 @@ use crate::{
     cases::TestCase,
     context::StageConfig,
     error::{CompileError, CreateFilesError, SpawnTestError},
-    BorrowedFileConfig, BorrowedFileContent, Bytes, Output, TestContext,
+    BorrowedFileConfig, BorrowedFileContent, Output, TestContext,
 };
 
 /// Parse a command from argv.  `argv[0]` is the program, `argv[1..]` is the args.
@@ -701,27 +702,18 @@ impl<T> TestResult<T> {
     pub fn output(&self) -> &Output {
         &self.output
     }
+}
 
-    /// Get the standard output of this test
-    pub fn stdout(&self) -> &Bytes {
-        &self.output.stdout
-    }
+impl<T> Deref for TestResult<T> {
+    type Target = Output;
 
-    /// Get the standard error of this test
-    pub fn stderr(&self) -> &Bytes {
-        &self.output.stderr
-    }
-
-    /// Get the exit status of this test
-    pub fn exit_status(&self) -> i32 {
-        self.output.status
+    fn deref(&self) -> &Self::Target {
+        &self.output
     }
 }
 
 /// A handle to a set of running tests.  Tests can either be waited on one-at-a-time (using
 /// [`TestHandle::wait_next`]), or in bulk (using [`TestHandle::wait_all`]).
-///
-// TODO: code example
 pub struct TestHandle<T> {
     joinset: JoinSet<Result<TestResult<T>, SpawnTestError>>,
     test_count: usize,
@@ -834,20 +826,13 @@ impl CompileResult {
     pub fn output(&self) -> &Output {
         &self.output
     }
+}
 
-    /// Get the standard output
-    pub fn stdout(&self) -> &Bytes {
-        &self.output.stdout
-    }
+impl Deref for CompileResult {
+    type Target = Output;
 
-    /// Get the standard error
-    pub fn stderr(&self) -> &Bytes {
-        &self.output.stderr
-    }
-
-    /// Get the exit status
-    pub fn exit_status(&self) -> i32 {
-        self.output.status
+    fn deref(&self) -> &Self::Target {
+        &self.output
     }
 }
 

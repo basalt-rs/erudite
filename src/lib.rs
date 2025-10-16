@@ -163,7 +163,7 @@ impl From<Vec<u8>> for Bytes {
     }
 }
 
-/// The output of a finished process, containing standard output, standard input, and the exit
+/// The output of a finished process, containing standard output, standard error, and the exit
 /// status
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Output {
@@ -291,7 +291,7 @@ where
 /// Representation of the content of a file to be added into a test environment
 ///
 /// [`FileContent::Path`] represents a path on the host system.  The test runner will copy from
-/// this path into the test environment _at compile time_.  If the data should be loaded now,
+/// this path into the test environment _at test compile time_.  If the data should be loaded now,
 /// consider using [`FileContent::Bytes`].
 ///
 /// [`FileContent::Bytes`] contains a vec of bytes that will be written to the file when the tests
@@ -300,7 +300,7 @@ where
 pub enum FileContent {
     /// Copies a file directly from this path
     ///
-    /// NOTE: This happens when the tests are compiled/run.  If you want to load the file into
+    /// NOTE: This happens when the tests are compiled.  If you want to load the file into
     /// memory first, use [`FileContent::Bytes`].
     Path(PathBuf),
     /// Creates a new file with this content
