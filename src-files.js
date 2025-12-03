@@ -1,3 +1,2 @@
-var srcIndex = new Map(JSON.parse('[["erudite",["",[],["lib.rs"]]]]'));
-createSrcSidebar();
-//{"start":36,"fragment_lengths":[30]}
+createSrcSidebar('[["erudite",["",[["context",[],["builder.rs","mod.rs"]]],["cases.rs","error.rs","lib.rs","runner.rs"]]]]');
+//{"start":19,"fragment_lengths":[102]}

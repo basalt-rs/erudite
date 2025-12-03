@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Bytes","RunOutput","TestFailReason","TestOutput"],"struct":["CommandConfig","Runner","SimpleOutput","TestCase"]};
+window.SIDEBAR_ITEMS = {"enum":["Bytes","FileContent"],"mod":["cases","error","runner"],"struct":["BorrowedFileConfig","BorrowedFileContent","FileConfig","MemorySize","Output","Rules","TestContext","TestContextBuilder"]};
