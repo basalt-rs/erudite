@@ -1,16 +1,37 @@
 [package]
 name = "erudite"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.80"
+authors = ["funnyboy-roks <fbr@funnyboyroks.com>"]
+description = "A fully-asynchronous, sandboxed, language-agnostic, test running library"
+license = "Apache-2.0"
+repository = "https://github.com/basalt-rs/erudite"
+keywords = ["basalt", "test", "test-runner", "async"]
+categories = [
+    "asynchronous",
+    "development-tools::testing",
+    "concurrency",
+]
 
 [features]
-serde = ["dep:serde"]
+regex = ["dep:regex"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
 
 [dependencies]
-anyhow = "1.0.94"
 leucite = { version = "1.0.0", features = ["tokio"] }
 tmpdir = "1.0.0"
-tokio = { version = "1.42.0", features = ["fs", "macros", "time", "io-util"] }
-tracing = "0.1.41"
-serde = { version = "1.0.217", features = ["derive"], optional = true }
+tokio = { version = "1.47.1", features = ["fs", "macros", "time", "io-util"] }
+tracing = { version = "0.1.41", features = ["async-await"] }
+derive_more = { version = "2.0.1", features = ["full"] }
+concat-idents = "1.1.5"
+thiserror = "2.0.16"
+regex = { version = "1.11.1", optional = true }
+
+[dev-dependencies]
+erudite = { path = ".", features = ["regex"] }
+tokio = { version = "1.47.1", features = ["full"] }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+regex = "1.11.1"

@@ -1,57 +1,109 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![warn(missing_docs)]
+
+//! Erudite is an asynchronous test runner that can run a suites of tests in concurrently.
+//!
+//! There are a couple of key structures which make up Erudite:
+//!
+//! # [`TestContext`]
+//!
+//! A test context holds information about how a test suite should be run.  Information such as
+//! the commands needed to run the tests, the restrictions to apply to said commands, and the
+//! tests themselves are included in a test context.
+//!
+//! A test context is designed with the intention that it can be placed into an [`Arc`] and be used
+//! throughout the program, creating test runners, which can be used to run tests.
+//!
+//! In a test context, individual tests are associated via groups.  A group can be anything (with
+//! some restrictions, see [`TestContextBuilder::test`] for details).
+//!
+//! # [`TestRunner`]
+//!
+//! A test runner is created from a test context by selecting a single group and is used to run a
+//! test suite.  There are some additional configurations that can be added to the test runner for
+//! run-specific settings.  Once a runner has been created, it can compile and then run the tests,
+//! giving a handle to those tests.
+//!
+//! # [`TestHandle`]
+//!
+//! A test handle is a handle to an actively running suite of tests.  A test handle can wait for
+//! the tests to finish one at a time or for all of them to finish.  Test handles return
+//! [`TestResult`]s which contain information about the output of a test, the time it took, and
+//! whether that test passed.
+//!
+//! [`Arc`]: std::sync::Arc
+//! [`TestRunner`]: crate::runner::TestRunner
+//! [`TestHandle`]: crate::runner::TestHandle
+//! [`TestResult`]: crate::runner::TestResult
+//!
+//! # Usage
+//!
+//! ```no_run
+//! # // This test is also at tests/reverse.rs
+//! # use erudite::{TestContext, FileContent, BorrowedFileContent, Rules, MemorySize, runner::TestResultState};
+//! # use std::{sync::Arc, time::Duration, path::Path};
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # let runner_code = include_str!("../tests/code/reverse-runner.rs");
+//! # let solution_code = include_str!("../tests/code/reverse-solution.rs");
+//! let context = TestContext::builder()
+//!     .compile_command(["rustc", "-o", "runner", "runner.rs"])
+//!     .run_command(["./runner"])
+//!     .test("group", "hello", "olleh", ())
+//!     .test("group", "world", "dlrow", ())
+//!     .test("group", "rust", "tsur", ())
+//!     .test("group", "tacocat", "tacocat", ())
+//!     .trim_output(true)
+//!     .file(FileContent::string(runner_code), "runner.rs")
+//!     .build();
+//!
+//! let context = Arc::new(context);
+//!
+//! let mut handle = context
+//!     .test_runner(&"group")
+//!     .expect("This group was added above")
+//!     .file(BorrowedFileContent::string(solution_code), Path::new("solution.rs"))
+//!     .compile_and_run()
+//!     .await?;
+//!
+//! let results = handle.wait_all().await?;
+//!
+//! assert_eq!(results[0].state(), TestResultState::Pass);
+//!
+//! # Ok(())
+//! # }
+//! ```
+
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
-    process::{Output, Stdio},
-    sync::Arc,
-    time::Duration,
 };
 
-use anyhow::{bail, ensure, Context};
-use leucite::{CommandExt, MemorySize, Rules};
-use tmpdir::TmpDir;
-use tokio::{fs, io::AsyncWriteExt, process::Command, task::JoinSet};
+use derive_more::From;
+// Re-exports so the consumer doesn't need to depend on leucite directly
+pub use leucite::{MemorySize, Rules};
+use tokio::{io::AsyncRead, task::JoinSet};
 
-/// Represents the output of a [`Runner`]'s execution.
-#[derive(Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum RunOutput {
-    /// The runner failed to spawn the command to compile the program
-    CompileSpawnFail(String),
-    /// The runner failed to compile the command due (compile command had non-zero exit code)
-    CompileFail(SimpleOutput),
-    /// The _runner_ ran successfully.  This does not necessarily mean the tests passed.
-    RunSuccess(Vec<TestOutput>),
-}
-
-/// A test case which has an input and expected output
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TestCase {
-    input: String,
-    output: String,
-}
-
-impl TestCase {
-    /// Create a new test case from input and output
-    pub fn new(input: impl Into<String>, output: impl Into<String>) -> Self {
-        Self {
-            input: input.into(),
-            output: output.into(),
-        }
-    }
-}
+pub mod cases;
+// pub use because its api is small enough that it doesn't need to be exposed as another module
+pub(crate) mod context;
+pub use context::{TestContext, TestContextBuilder};
+pub mod error;
+pub mod runner;
 
 /// Represents some data that may either be a string or a series of bytes.  The recommended method
 /// for constructing this type is to use [`From::from`] which will automatically choose the
 /// appropriate variant for the data.
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(untagged))]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Bytes {
+    /// Data contained within is a string
     String(String),
+    /// Data contained within is bytes, which are _not_ a string (checked on construction)
     Bytes(Vec<u8>),
 }
 
 impl Bytes {
+    /// Get the length of the underlying data, in bytes
     pub fn len(&self) -> usize {
         match self {
             Bytes::String(s) => s.len(),
@@ -59,17 +111,37 @@ impl Bytes {
         }
     }
 
-    pub fn str(&self) -> Option<&str> {
+    /// Get whether this collection is empty
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Bytes::String(s) => s.is_empty(),
+            Bytes::Bytes(v) => v.is_empty(),
+        }
+    }
+
+    /// Get the bytes as a string.  If the bytes are not a valid string, returns `None`.
+    pub fn as_str(&self) -> Option<&str> {
         match self {
             Bytes::String(s) => Some(s),
             Bytes::Bytes(_) => None,
         }
     }
 
+    /// Convert this data to a string, replacing any non-utf8 characters with [`U+FFFD REPLACEMENT
+    /// CHARACTER`](https://doc.rust-lang.org/stable/core/char/constant.REPLACEMENT_CHARACTER.html)
+    /// (`�`)
+    pub fn to_str_lossy(&self) -> Cow<'_, str> {
+        match self {
+            Bytes::String(ref s) => Cow::Borrowed(s),
+            Bytes::Bytes(ref bytes) => String::from_utf8_lossy(bytes),
+        }
+    }
+
+    /// Get the bytes stored as a slice
     pub fn bytes(&self) -> &[u8] {
         match self {
             Bytes::String(s) => s.as_bytes(),
-            Bytes::Bytes(v) => &v,
+            Bytes::Bytes(v) => v,
         }
     }
 }
@@ -81,6 +153,8 @@ impl From<String> for Bytes {
 }
 
 impl From<Vec<u8>> for Bytes {
+    /// Convert from a vector of bytes into [`Bytes`].  This will check the bytes to determine
+    /// whether it is a string.
     fn from(value: Vec<u8>) -> Self {
         String::from_utf8(value)
             .map(Self::String)
@@ -89,589 +163,428 @@ impl From<Vec<u8>> for Bytes {
     }
 }
 
-/// Data which can be returned from a command
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct SimpleOutput {
-    pub stdout: Bytes,
-    pub stderr: Bytes,
-    pub status: i32,
+/// The output of a finished process, containing standard output, standard error, and the exit
+/// status
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct Output {
+    stdout: Bytes,
+    stderr: Bytes,
+    status: i32,
 }
 
-impl From<Output> for SimpleOutput {
-    fn from(value: Output) -> Self {
+impl Output {
+    pub(crate) fn new(stdout: impl Into<Bytes>, stderr: impl Into<Bytes>, status: i32) -> Self {
         Self {
-            stdout: value.stdout.into(),
-            stderr: value.stderr.into(),
-            status: value.status.code().unwrap_or(0),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+            status,
         }
+    }
+
+    /// Get the standard output of this `Output`
+    pub fn stdout(&self) -> &Bytes {
+        &self.stdout
+    }
+
+    /// Get the standard error of this `Output`
+    pub fn stderr(&self) -> &Bytes {
+        &self.stderr
+    }
+
+    /// Get the exit status of this `Output`
+    pub fn exit_status(&self) -> i32 {
+        self.status
+    }
+
+    /// Get whether this `Output` is a success (exit status == 0)
+    pub fn success(&self) -> bool {
+        self.status == 0
     }
 }
 
-/// The reason that a test may fail
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum TestFailReason {
-    /// The test took longer than the timeout allowed
-    Timeout,
-    /// The test returned output that is different from the expected output
-    IncorrectOutput(SimpleOutput),
-    /// The test exited with a non-zero exit code
-    Crash(SimpleOutput),
-}
-
-/// A Result-like enum that represents a passed or failed test
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum TestOutput {
-    Pass,
-    Fail(TestFailReason),
-}
-
-impl From<Result<(), TestFailReason>> for TestOutput {
-    fn from(value: Result<(), TestFailReason>) -> Self {
-        match value {
-            Ok(()) => Self::Pass,
-            Err(r) => Self::Fail(r),
+// NOTE: For some reason, when using `async `, the returned future is not `Send`.
+#[allow(clippy::manual_async_fn)]
+fn copy_dir_recursive(
+    src: impl Into<PathBuf>,
+    dst: impl Into<PathBuf>,
+) -> impl std::future::Future<Output = std::io::Result<()>> + Send {
+    let src = src.into();
+    let dst = dst.into();
+    async move {
+        let mut js = JoinSet::new();
+        tokio::fs::create_dir_all(&dst).await?;
+        let mut rd = tokio::fs::read_dir(src).await?;
+        while let Some(entry) = rd.next_entry().await? {
+            let ty = entry.file_type().await?;
+            let dst = dst.join(entry.file_name());
+            let src = entry.path();
+            if ty.is_dir() {
+                js.spawn(copy_dir_recursive(src, dst));
+            } else {
+                js.spawn(async move { tokio::fs::copy(src, dst).await.map(|_| ()) });
+            }
         }
+
+        // join individually, so we fail early
+        while let Some(js) = js.join_next().await {
+            js??
+        }
+        Ok(())
     }
 }
 
 /// Configuration for how a file should be setup for test cases to be run
-#[derive(Clone, Debug)]
-enum FileSetup {
-    Copy { dest: PathBuf, src: PathBuf },
-    Create { dest: PathBuf, content: Box<[u8]> },
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileConfig {
+    /// This path is relative to the temporary directory created while running tests
+    src: FileContent,
+    dest: PathBuf,
 }
 
-/// Convert a slice of strings to a [`Command`] by taking the first one as the program and the rest
-/// as args
-fn command_from_slice(args: &[String]) -> Option<Command> {
-    let mut args = args.iter();
-    let mut cmd = Command::new(args.next()?);
-    cmd.args(args);
-    Some(cmd)
-}
-
-/// Lightweight configuration that can implement copy since it will need to be moved
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-struct CopyConfig {
-    timeout: Duration,
-    trim_output: bool,
-}
-
-impl Default for CopyConfig {
-    fn default() -> Self {
-        Self {
-            timeout: Duration::from_secs(60),
-            trim_output: true,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct CommandConfig<T> {
-    compile: Option<T>,
-    run: Option<T>,
-}
-
-impl<T> Default for CommandConfig<T> {
-    fn default() -> Self {
-        Self {
-            compile: Default::default(),
-            run: Default::default(),
-        }
-    }
-}
-
-impl<T> CommandConfig<T> {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    pub fn both(value: T) -> Self
-    where
-        T: Copy,
-    {
-        Self {
-            compile: Some(value),
-            run: Some(value),
-        }
-    }
-
-    pub fn compile(mut self, value: T) -> Self {
-        self.compile = Some(value);
-        self
-    }
-
-    pub fn run(mut self, value: T) -> Self {
-        self.run = Some(value);
-        self
-    }
-}
-
-/// Runner builder for a suite of tests
-///
-/// ```no_run
-/// # // no_run because `.run()` executes commands
-/// # use erudite::Runner;
-/// # use leucite::Rules;
-/// # async fn foo() -> anyhow::Result<()> {
-/// let run_rules = Rules::new()
-///     .add_read_only("/usr")
-///     .add_read_only("/etc")
-///     .add_read_only("/bin");
-///
-/// let output = Runner::new()
-///     .compile_command(["ghc", "solution.hs"])
-///     .run_command(["./solution"])
-///     .test("hello", "olleh")
-///     .copy_file("solution.hs", "solutions/solution.hs")
-///     .run_rules(run_rules)
-///     .run()
-///     .await?;
-/// # Ok(())
-/// # }
-/// ```
-#[derive(Clone, Debug, Default)]
-pub struct Runner {
-    copy_config: CopyConfig,
-    cwd: Option<PathBuf>,
-    files: Vec<FileSetup>,
-    compile_command: Option<Vec<String>>,
-    run_command: Vec<String>,
-    test_cases: Vec<TestCase>,
-    compile_rules: Option<Rules>,
-    run_rules: Option<Rules>,
-    max_memory: CommandConfig<MemorySize>,
-    max_file_size: CommandConfig<MemorySize>,
-}
-
-impl Runner {
-    /// Create a new runner with default values.
+impl FileConfig {
+    /// Construct a new FileConfig
     ///
-    /// ```
-    /// # use erudite::Runner;
-    /// let mut runner = Runner::new();
-    /// ```
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the command used to compile a solution for this runner.  If the compile command is not
-    /// specified, the compilation step will be skipped when calling [`Runner::run`]
+    /// If `src` is a path, the contents of that path will only be copied when tests are compiled.
+    /// If that is not the desired behaviour, use [`FileContent::bytes`] instead.
     ///
-    /// This command is run in a custom directory that may be specified via this builder.  See
-    /// [`Runner::run_directory`] for more details.
-    ///
-    /// ```
-    /// # use erudite::Runner;
-    /// let mut runner = Runner::new();
-    /// runner.compile_command(["javac", "Solution.java"]);
-    /// ```
-    pub fn compile_command(
-        &mut self,
-        command: impl IntoIterator<Item = impl Into<String>>,
-    ) -> &mut Self {
-        self.compile_command = Some(command.into_iter().map(Into::into).collect());
-        self
-    }
-
-    /// Set the command used to run a solution.  If the run command is not specified, an error will
-    /// be returned upon a call to [`Runner::run`]
-    ///
-    /// This command is run in a custom directory that may be specified via this builder.  See
-    /// [`Runner::run_directory`] for more details.
-    ///
-    /// ```
-    /// # use erudite::Runner;
-    /// let mut runner = Runner::new();
-    /// runner.run_command(["java", "Solution"]);
-    /// ```
-    pub fn run_command(
-        &mut self,
-        command: impl IntoIterator<Item = impl Into<String>>,
-    ) -> &mut Self {
-        self.run_command = command.into_iter().map(Into::into).collect();
-        self
-    }
-
-    /// Add a single test with expected input and expected output
-    ///
-    /// If no tests are specified, an error is returned from [`Runner::run`].
-    ///
-    /// ```
-    /// # use erudite::Runner;
-    /// let mut runner = Runner::new();
-    /// runner.test("hello", "olleh")
-    ///       .test("hello world", "dlrow olleh");
-    /// ```
-    pub fn test(&mut self, input: impl Into<String>, output: impl Into<String>) -> &mut Self {
-        self.test_cases.push(TestCase::new(input, output));
-        self
-    }
-
-    /// Add multiple tests to the list of test cases for this runner
-    ///
-    /// If no tests are specified, an error is returned from [`Runner::run`].
-    ///
-    /// ```
-    /// # use erudite::{Runner, TestCase};
-    /// let mut runner = Runner::new();
-    /// runner.tests([
-    ///     TestCase::new("hello", "olleh"),
-    ///     TestCase::new("hello world", "dlrow olleh")
-    /// ]);
-    /// ```
-    pub fn tests(&mut self, cases: impl IntoIterator<Item = TestCase>) -> &mut Self {
-        self.test_cases.extend(cases);
-        self
-    }
-
-    /// Determines whether the output should be trimmed before comparison with the expected output
-    /// (via [`slice::trim_ascii`])
-    ///
-    /// Default: `true`
-    pub fn trim_output(&mut self, trim_output: bool) -> &mut Self {
-        self.copy_config.trim_output = trim_output;
-        self
-    }
-
-    /// Set the maximum amount of time that any test is allowed to run
-    ///
-    /// Note: this is for each test individually, not the whole suite
-    ///
-    /// Default: 1 minute
-    pub fn timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.copy_config.timeout = timeout;
-        self
-    }
-
-    /// Set the directory in which the tests will be run.  If not specified, a directory will be
-    /// created in [`std::env::temp_dir`].
-    ///
-    /// The program will be granted read/write/execute permissions in this directory
-    pub fn run_directory(&mut self, path: impl Into<PathBuf>) -> &mut Self {
-        self.cwd = Some(path.into());
-        self
-    }
-
-    /// Designate a file to be created in the run directory with specific content
-    ///
-    /// The path is based in the directory created in [`Runner::run_directory`].
-    ///
-    /// ```
-    /// # use erudite::Runner;
-    /// let mut runner = Runner::new();
-    /// runner.create_file("solution.py", r#"print("hello from python")"#);
-    /// ```
-    pub fn create_file(
-        &mut self,
-        path: impl Into<PathBuf>,
-        content: impl AsRef<[u8]>,
-    ) -> &mut Self {
-        self.files.push(FileSetup::Create {
-            dest: path.into(),
-            content: content.as_ref().to_vec().into_boxed_slice(),
-        });
-        self
-    }
-
-    /// Designate a file to be copied into the run directory from a given location
-    ///
-    /// The destination path is based in the directory created in [`Runner::run_directory`].  The
-    /// source path is based on the current directory of the caller of this library.
-    ///
-    /// ```
-    /// # use erudite::Runner;
-    /// let mut runner = Runner::new();
-    /// runner.copy_file("solution.hs", "example/solution.hs");
-    /// ```
-    pub fn copy_file(&mut self, dest: impl Into<PathBuf>, source: impl Into<PathBuf>) -> &mut Self {
-        self.files.push(FileSetup::Copy {
-            dest: dest.into(),
-            src: source.into(),
-        });
-        self
-    }
-
-    /// Set the [`Rules`] for the run command.
-    ///
-    /// If this is not specified, but `compile_rules` is set, then it will use those rules.  
-    /// If neither is specified _no rules will be placed on the run command_.
-    ///
-    /// Note: the rules provided will automatically have the `run_directory` added with read/write
-    /// permissions.
-    pub fn run_rules(&mut self, rules: Rules) -> &mut Self {
-        self.run_rules = Some(rules);
-        self
-    }
-
-    /// Set the [`Rules`] for the run command.
-    ///
-    /// If this is specified, but `run_rules` is not set, then `run_rules` will use these rules.  
-    /// If this is not specified, then the compile command will be run with no rules set.
-    ///
-    /// Note: the rules provided will automatically have the `run_directory` added with read/write
-    /// permissions.
-    pub fn compile_rules(&mut self, rules: Rules) -> &mut Self {
-        self.compile_rules = Some(rules);
-        self
-    }
-
-    /// Limit the maximum amount of memory that the commands can use
-    pub fn max_memory(&mut self, max_memory: CommandConfig<MemorySize>) -> &mut Self {
-        self.max_memory = max_memory;
-        self
-    }
-
-    /// Limit the maximum file size that the command can produce
-    pub fn max_file_size(&mut self, max_file_size: CommandConfig<MemorySize>) -> &mut Self {
-        self.max_file_size = max_file_size;
-        self
-    }
-
-    /// Validate that this runner is in a valid state to be run
-    fn validate(&self) -> anyhow::Result<()> {
-        ensure!(self.run_command.len() != 0, "No run command provided");
-        ensure!(self.test_cases.len() != 0, "No test cases provided");
-        Ok(())
-    }
-
-    /// Create the files requested by [`Runner::create_file`] and [`Runner::copy_file`].
-    async fn create_files(&mut self) -> anyhow::Result<(PathBuf, Option<TmpDir>)> {
-        let (cwd, tmpdir) = if let Some(cwd) = &self.cwd {
-            (cwd, None)
+    /// If `dest` is an absolute path, it will be made relative.  (i.e., `/foo/bar` becomes
+    /// `foo/bar`)
+    pub fn new(src: impl Into<FileContent>, dest: impl AsRef<Path>) -> Self {
+        let dest = dest.as_ref();
+        let dest = if dest.is_absolute() {
+            dest.strip_prefix("/").unwrap().to_path_buf()
         } else {
-            let tmpdir = TmpDir::new(env!("CARGO_CRATE_NAME"))
-                .await
-                .context("Creating temp dir")?;
-            (&tmpdir.to_path_buf(), Some(tmpdir))
+            dest.to_path_buf()
         };
 
-        fs::create_dir_all(cwd)
-            .await
-            .with_context(|| format!("Creating dir '{}'", cwd.display()))?;
+        Self {
+            src: src.into(),
+            dest,
+        }
+    }
 
-        for file in &self.files {
-            match file {
-                FileSetup::Copy { dest, src } => {
-                    let mut full_dest = cwd.clone();
-                    full_dest.extend(dest);
-                    eprintln!("Copying {} -> {}", src.display(), full_dest.display());
-                    fs::copy(src, &full_dest).await.with_context(|| {
-                        format!("Copying {} -> {}", src.display(), full_dest.display())
-                    })?;
-                }
-                FileSetup::Create { dest, content } => {
-                    let mut full_dest = cwd.clone();
-                    full_dest.extend(dest);
-                    eprintln!(
-                        "Creating file {} with {} bytes",
-                        full_dest.display(),
-                        content.len()
-                    );
-                    fs::write(&full_dest, content).await.with_context(|| {
-                        format!(
-                            "Creating file {} with {} bytes",
-                            full_dest.display(),
-                            content.len()
-                        )
-                    })?;
+    pub(crate) async fn write_file(&self, base: impl AsRef<Path>) -> std::io::Result<()> {
+        self.borrow().write_file(base).await
+    }
+
+    /// Get the destination from this FileConfig
+    pub fn dest(&self) -> &Path {
+        &self.dest
+    }
+
+    /// Get a borrowed version of the file config
+    pub fn borrow(&self) -> BorrowedFileConfig<'_> {
+        BorrowedFileConfig::from_owned(self)
+    }
+}
+
+impl<S, D> From<(S, D)> for FileConfig
+where
+    S: Into<FileContent>,
+    D: AsRef<Path>,
+{
+    fn from((source, destination): (S, D)) -> Self {
+        Self::new(source, destination)
+    }
+}
+
+/// Representation of the content of a file to be added into a test environment
+///
+/// [`FileContent::Path`] represents a path on the host system.  The test runner will copy from
+/// this path into the test environment _at test compile time_.  If the data should be loaded now,
+/// consider using [`FileContent::Bytes`].
+///
+/// [`FileContent::Bytes`] contains a vec of bytes that will be written to the file when the tests
+/// are compiled.
+#[derive(Clone, Debug, From, PartialEq, Eq)]
+pub enum FileContent {
+    /// Copies a file directly from this path
+    ///
+    /// NOTE: This happens when the tests are compiled.  If you want to load the file into
+    /// memory first, use [`FileContent::Bytes`].
+    Path(PathBuf),
+    /// Creates a new file with this content
+    Bytes(Vec<u8>),
+}
+
+impl From<&Path> for FileContent {
+    fn from(value: &Path) -> Self {
+        Self::path(value)
+    }
+}
+
+impl From<&[u8]> for FileContent {
+    fn from(value: &[u8]) -> Self {
+        Self::bytes(value)
+    }
+}
+
+impl<const N: usize> From<&[u8; N]> for FileContent {
+    fn from(value: &[u8; N]) -> Self {
+        Self::bytes(value)
+    }
+}
+
+impl FileContent {
+    /// Construct a `FileContent::Path` from something that's like a path
+    ///
+    /// ```
+    /// # use erudite::FileContent;
+    /// let content = FileContent::path("/foo/bar");
+    /// ```
+    pub fn path(path: impl Into<PathBuf>) -> Self {
+        Self::Path(path.into())
+    }
+
+    /// Construct a `FileContent::Bytes` from something that's like a string.
+    ///
+    /// ```
+    /// # use erudite::FileContent;
+    /// let content = FileContent::string("// some rust code");
+    /// ```
+    pub fn string(string: impl Into<String>) -> Self {
+        Self::bytes(string.into())
+    }
+
+    /// Construct a `FileContent::Bytes` from raw bytes
+    ///
+    /// ```
+    /// # use erudite::FileContent;
+    /// let content = FileContent::bytes([0xfa, 0xca, 0xde]);
+    /// ```
+    pub fn bytes(bytes: impl Into<Vec<u8>>) -> Self {
+        Self::Bytes(bytes.into())
+    }
+}
+
+/// Configuration for how a file should be setup for test cases to be run
+#[derive(PartialEq, Debug)]
+pub struct BorrowedFileConfig<'a> {
+    /// This path is relative to the temporary directory created while running tests
+    dest: &'a Path,
+    src: BorrowedFileContent<'a>,
+}
+
+impl<'a> BorrowedFileConfig<'a> {
+    /// Construct a new [`BorrowedFileConfig`]
+    ///
+    /// If `src` is a path, the contents of that path will only be copied when tests are compiled.
+    /// If that is not the desired behaviour, use [`FileContent::bytes`] instead.
+    ///
+    /// If `dest` is an absolute path, it will be made relative.  (i.e., `/foo/bar` becomes
+    /// `foo/bar`)
+    pub fn new(src: impl Into<BorrowedFileContent<'a>>, dest: &'a Path) -> Self {
+        let dest = if dest.is_absolute() {
+            dest.strip_prefix("/").unwrap()
+        } else {
+            dest
+        };
+
+        Self {
+            src: src.into(),
+            dest,
+        }
+    }
+
+    /// Construct a new `BorrowedFileConfig` from an existing [`FileConfig`]
+    pub fn from_owned(owned: &'a FileConfig) -> Self {
+        BorrowedFileConfig {
+            dest: owned.dest(),
+            src: BorrowedFileContent::from_owned(&owned.src),
+        }
+    }
+
+    /// Get the destination of this `BorrowedFileConfig`
+    pub fn dest(&self) -> &Path {
+        self.dest
+    }
+
+    async fn write_file(&mut self, base: impl AsRef<Path>) -> std::io::Result<()> {
+        let target = base.as_ref().join(self.dest());
+        match self.src.0 {
+            BorrowedFileContentInner::Path(ref path) => {
+                if tokio::fs::metadata(path).await?.is_dir() {
+                    copy_dir_recursive(path.to_path_buf(), target.to_path_buf()).await?;
+                } else {
+                    tokio::fs::copy(path, target).await?;
                 }
             }
-        }
-
-        Ok((cwd.to_path_buf(), tmpdir))
-    }
-
-    /// Run a given test
-    ///
-    /// This function is called in [`tokio::spawn`], so doesn't take `self`.
-    async fn run_test(
-        mut run_command: Command,
-        copy_config: CopyConfig,
-        case: TestCase,
-    ) -> anyhow::Result<TestOutput> {
-        let mut child = run_command
-            .spawn()
-            .with_context(|| format!("running command {:?}", run_command))?;
-
-        let mut stdin = child.stdin.take().unwrap();
-        stdin
-            .write_all(case.input.as_bytes())
-            .await
-            .context("Writing stdin to test case")?;
-        stdin
-            .write_u8(b'\n')
-            .await
-            .context("Writing stdin to test case")?;
-        drop(stdin);
-        let out = match tokio::time::timeout(copy_config.timeout, child.wait_with_output()).await {
-            Ok(out) => out?,
-            Err(_) => {
-                return Ok(TestOutput::Fail(TestFailReason::Timeout));
+            BorrowedFileContentInner::Bytes(ref contents) => {
+                tokio::fs::write(target, contents).await?;
             }
-        };
-
-        let (expected, actual) = if copy_config.trim_output {
-            (case.output.as_bytes().trim_ascii(), out.stdout.trim_ascii())
-        } else {
-            (case.output.as_bytes(), &out.stdout[..])
-        };
-
-        if !out.status.success() {
-            Ok(TestOutput::Fail(TestFailReason::Crash(out.into())))
-        } else if expected == actual {
-            Ok(TestOutput::Pass)
-        } else {
-            Ok(TestOutput::Fail(TestFailReason::IncorrectOutput(
-                out.into(),
-            )))
+            BorrowedFileContentInner::Reader(ref mut reader) => {
+                let mut out = tokio::fs::File::create(target).await?;
+                tokio::io::copy(reader, &mut out).await?;
+            }
         }
-    }
-
-    /// # Panics:
-    ///
-    /// - If `self.config.compile_command` is not a valid command
-    async fn compile(&self, cwd: &Path) -> Result<(), RunOutput> {
-        let Some(compile_command) = &self.compile_command else {
-            // There is no compile command, and thus no compile step needed
-            return Ok(());
-        };
-
-        let compile_rules = self.get_compile_rules(cwd);
-
-        let output = command_from_slice(compile_command)
-            .expect("Checked by caller")
-            .current_dir(cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .restrict_if(compile_rules.map(Arc::new))
-            .max_memory_if(self.max_memory.compile)
-            .max_file_size_if(self.max_file_size.compile)
-            .spawn()
-            .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?
-            .wait_with_output()
-            .await
-            .map_err(|e| RunOutput::CompileSpawnFail(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(RunOutput::CompileFail(output.into()));
-        }
-
         Ok(())
     }
+}
 
-    async fn run_tests(&self, cwd: &Path) -> anyhow::Result<RunOutput> {
-        // outputs of each test
-        // Keeping a list like this so we maintain order.
-        let mut out: Vec<Option<TestOutput>> = vec![None; self.test_cases.len()];
-
-        let mut joinset = JoinSet::new();
-        let arc = self.get_run_rules(cwd).map(Arc::new);
-        for (i, case) in self.test_cases.clone().into_iter().enumerate() {
-            let Some(mut run_command) = command_from_slice(&self.run_command) else {
-                bail!("Invalid command {:?}", self.run_command);
-            };
-            run_command
-                .current_dir(cwd)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .restrict_if(arc.as_ref().map(Arc::clone))
-                .max_memory_if(self.max_memory.run)
-                .max_file_size_if(self.max_file_size.run);
-            // copy the configs before we pass them into the `spawn` call.
-            let copy = self.copy_config;
-            joinset.spawn(async move {
-                Self::run_test(run_command, copy, case)
-                    .await
-                    .map(|v| (i, v))
-            });
-        }
-
-        while let Some(res) = joinset.join_next().await {
-            let (i, res) = res
-                .context("joining on command output")?
-                .context("test output")?;
-            out[i] = Some(res);
-        }
-
-        let out: Vec<_> = out.into_iter().filter_map(|t| t).collect();
-
-        assert!(
-            out.len() == self.test_cases.len(),
-            "Out should have every case after joinset is done"
-        );
-
-        Ok(RunOutput::RunSuccess(out))
+impl<'a, S> From<(S, &'a Path)> for BorrowedFileConfig<'a>
+where
+    S: Into<BorrowedFileContent<'a>>,
+{
+    fn from((source, destination): (S, &'a Path)) -> Self {
+        Self::new(source, destination)
     }
+}
 
-    fn get_run_rules(&self, cwd: &Path) -> Option<Rules> {
-        match (&self.run_rules, &self.compile_rules) {
-            (None, None) => None,
-            (None, Some(c)) => Some(c.clone().add_read_write(cwd)),
-            (Some(r), _) => Some(r.clone().add_read_write(cwd)),
+/// A trait which is added to all [`AsyncRead`] + [`Unpin`]
+#[doc(hidden)]
+pub trait AsyncReadUnpin: AsyncRead + Unpin + Send {}
+impl<T> AsyncReadUnpin for T where T: AsyncRead + Unpin + Send {}
+
+/// Some form of content that will be used to create a file when a test is compiled
+#[derive(From, PartialEq, Debug)]
+pub struct BorrowedFileContent<'a>(BorrowedFileContentInner<'a>);
+// NOTE: This enum is wrapped so that it can't be created directly by a consuming library
+#[derive(From, derive_more::Debug)]
+enum BorrowedFileContentInner<'a> {
+    Path(&'a Path),
+    Bytes(&'a [u8]),
+    // NOTE: we're using `dyn` here for two reasons:
+    // - We don't want to have to carry around a generic everywhere
+    // - We don't want to constrain the caller to use the same reader for every file.  That would
+    //   become a pain in the ass when reading from multiple sources.
+    #[debug("Reader")]
+    Reader(&'a mut dyn AsyncReadUnpin),
+}
+
+impl PartialEq for BorrowedFileContentInner<'_> {
+    // NOTE: This implementation exists primarily for tests
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (BorrowedFileContentInner::Path(a), BorrowedFileContentInner::Path(b)) => a == b,
+            (BorrowedFileContentInner::Path(_), BorrowedFileContentInner::Bytes(_)) => false,
+            (BorrowedFileContentInner::Path(_), BorrowedFileContentInner::Reader(_)) => false,
+            (BorrowedFileContentInner::Bytes(_), BorrowedFileContentInner::Path(_)) => false,
+            (BorrowedFileContentInner::Bytes(a), BorrowedFileContentInner::Bytes(b)) => a == b,
+            (BorrowedFileContentInner::Bytes(_), BorrowedFileContentInner::Reader(_)) => false,
+            (BorrowedFileContentInner::Reader(_), BorrowedFileContentInner::Path(_)) => false,
+            (BorrowedFileContentInner::Reader(_), BorrowedFileContentInner::Bytes(_)) => false,
+            (BorrowedFileContentInner::Reader(_), BorrowedFileContentInner::Reader(_)) => false, // This is not actually possible to check, so assume false
         }
     }
+}
 
-    fn get_compile_rules(&self, cwd: &Path) -> Option<Rules> {
-        return self.compile_rules.clone().map(|c| c.add_read_write(cwd));
+impl<'a> BorrowedFileContent<'a> {
+    /// Construct a new `BorrowedFileContent` from an existing [`FileContent`]
+    pub fn from_owned(owned: &'a FileContent) -> Self {
+        match owned {
+            FileContent::Path(path) => Self::path(path),
+            FileContent::Bytes(bytes) => Self::bytes(bytes),
+        }
     }
 
-    /// Build and run all tests associated with this runner
+    /// Copy the file directly from this path on the host machine
     ///
-    /// Will error if the runner is not in a valid state or an error occurs while setting up or
-    /// cleaning up the tests.
-    ///
-    /// Any output related to the execution of the tests will be returned throught the
-    /// [`RunOutput`]
-    pub async fn run(&mut self) -> anyhow::Result<RunOutput> {
-        self.validate()?;
-        let (cwd, mut tmpdir) = self.create_files().await.context("Creating files")?;
+    /// Note: The copy happens when tests are compiled.  If you want to load the file into memory
+    /// first, use [`BorrowedFileContent::bytes`].
+    pub fn path(path: &'a Path) -> Self {
+        Self(BorrowedFileContentInner::Path(path))
+    }
 
-        if let Err(e) = self.compile(&cwd).await {
-            return Ok(e);
-        }
+    /// Write a string to the file
+    pub fn string(string: &'a str) -> Self {
+        Self(BorrowedFileContentInner::Bytes(string.as_bytes()))
+    }
 
-        let output = self.run_tests(&cwd).await.context("running test suite")?;
+    /// Write bytes to the file
+    pub fn bytes(bytes: &'a [u8]) -> Self {
+        Self(BorrowedFileContentInner::Bytes(bytes))
+    }
 
-        // We should not need to delete the tmpdir manually, but it doesn't seem to work without us
-        // manually calling `tmpdir.close()`.
-        if let Some(tmpdir) = tmpdir.take() {
-            tmpdir.close().await.with_context(|| {
-                format!("Deleting temp dir '{}'", tmpdir.to_path_buf().display())
-            })?;
-        }
+    /// Copy from this reader into the file
+    pub fn reader<R: AsyncRead + Unpin + Send>(r: &'a mut R) -> Self {
+        Self(BorrowedFileContentInner::Reader(r))
+    }
+}
 
-        Ok(output)
+impl<'a> From<&'a [u8]> for BorrowedFileContent<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        Self::bytes(value)
+    }
+}
+
+impl<'a> From<&'a Path> for BorrowedFileContent<'a> {
+    fn from(value: &'a Path) -> Self {
+        Self::path(value)
+    }
+}
+
+impl<'a> From<&'a PathBuf> for BorrowedFileContent<'a> {
+    fn from(value: &'a PathBuf) -> Self {
+        Self::path(value)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::Runner;
+mod test {
+    use super::*;
 
-    #[tokio::test]
-    async fn missing_fields() {
-        let ret = Runner::new().run().await;
-        assert!(matches!(ret, Err(_)));
+    #[test]
+    fn bytes_from_string() {
+        let string = "hello".to_string();
+        let bytes = Bytes::from(string.clone());
+        assert_eq!(bytes, Bytes::String(string.clone()));
+        assert_eq!(bytes.bytes(), string.as_bytes());
+        assert_eq!(bytes.as_str(), Some(&*string));
+        assert_eq!(bytes.to_str_lossy(), string);
+        assert_eq!(bytes.len(), string.len());
+        assert!(!bytes.is_empty());
     }
 
-    #[tokio::test]
-    async fn missing_run_command() {
-        let ret = Runner::new().test("hello", "olleh").run().await;
-        assert!(matches!(ret, Err(_)));
+    #[test]
+    fn bytes_from_vec() {
+        const BYTES: &[u8] = &[0xc3, 0x00, b'h', b'i'];
+        let bytes = Bytes::from(BYTES.to_vec()); // not a valid string
+        assert_eq!(bytes, Bytes::Bytes(BYTES.to_vec()));
+        assert_eq!(bytes.bytes(), BYTES);
+        assert!(bytes.as_str().is_none());
+        assert_eq!(bytes.to_str_lossy(), "�\0hi");
+        assert_eq!(bytes.len(), 4);
+        assert!(!bytes.is_empty());
     }
 
-    #[tokio::test]
-    async fn missing_test_cases() {
-        let ret = Runner::new()
-            .run_command(["node", "solution.js"])
-            .run()
-            .await;
-        assert!(matches!(ret, Err(_)));
+    #[test]
+    fn bytes_from_string_vec() {
+        const STRING: &str = "hello";
+        const BYTES: &[u8] = STRING.as_bytes();
+        let bytes = Bytes::from(BYTES.to_vec());
+        assert_eq!(bytes, Bytes::String(STRING.to_string()));
+        assert_eq!(bytes.bytes(), BYTES);
+        assert_eq!(bytes.as_str(), Some(STRING));
+        assert_eq!(bytes.to_str_lossy(), STRING);
+        assert_eq!(bytes.len(), STRING.len());
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn simple_output_success() {
+        let out = Output::new(
+            "hello".to_string().into_bytes(),
+            "world".to_string().into_bytes(),
+            0,
+        );
+
+        assert_eq!(out.stdout().as_str(), Some("hello"));
+        assert_eq!(out.stderr().as_str(), Some("world"));
+        assert_eq!(out.exit_status(), 0);
+        assert!(out.success());
+    }
+
+    #[test]
+    fn simple_output_fail() {
+        let out = Output::new(
+            "hello".to_string().into_bytes(),
+            "world".to_string().into_bytes(),
+            1,
+        );
+
+        assert_eq!(out.stdout().as_str(), Some("hello"));
+        assert_eq!(out.stderr().as_str(), Some("world"));
+        assert_eq!(out.exit_status(), 1);
+        assert!(!out.success());
     }
 }
